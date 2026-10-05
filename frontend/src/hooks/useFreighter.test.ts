@@ -301,6 +301,9 @@ describe('useFreighter — Network Agreement & Refusal', () => {
       const addr = await result.current.connect();
 
       expect(addr).toBe(TEST_STELLAR_ADDRESS);
+      // connect() resolves its own state update, but React still needs a tick
+      // to flush the re-render before the hook's values are readable here.
+      await waitFor(() => expect(result.current.isConnected).toBe(true));
       expect(result.current.isConnected).toBe(true);
       expect(result.current.address).toBe(TEST_STELLAR_ADDRESS);
       expect(result.current.network).toBe('TESTNET');

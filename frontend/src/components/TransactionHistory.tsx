@@ -19,6 +19,7 @@ import {
   isRealHash,
   isRealTransaction,
   mapCoordinatorOrderToTransaction,
+  transactionSignals,
   type Transaction,
 } from '../lib/orderRecovery';
 
@@ -37,6 +38,37 @@ const API_BASE_URL = import.meta.env.PROD
 const isTestnetTx = (tx: Transaction): boolean => {
   return tx.networkMode === 'testnet' || (tx.networkMode === undefined && isTestnet());
 };
+
+/**
+ * Drop locally-cached rows the coordinator has already reported.
+ *
+ * A cached row is dropped when it names the same order the coordinator just
+ * returned (matching hashlock, on-chain order id or a tx hash), so the
+ * authoritative copy is what stays on screen. Rows the coordinator has not
+ * seen yet are left alone, which keeps an optimistic local order visible
+ * before its announcement lands.
+ *
+ * The surviving cached rows are then re-keyed onto the coordinator's id: a
+ * locally-created order that has since been announced keeps its provisional
+ * id, but the coordinator's id is the one the rest of the UI (and any later
+ * poll) keys on.
+ */
+function dropCacheRowsSeenRemotely(
+  cached: Transaction[],
+  remote: Transaction[]
+): Transaction[] {
+  if (cached.length === 0 || remote.length === 0) return remote;
+  const remoteSignals = new Set<string>();
+  for (const tx of remote) {
+    for (const signal of transactionSignals(tx)) remoteSignals.add(signal);
+  }
+  const survivors = cached.filter(
+    (tx) => !transactionSignals(tx).some((signal) => remoteSignals.has(signal))
+  );
+  // Newest first, so an optimistic local order the coordinator has not seen yet
+  // stays at the top of the list.
+  return [...remote, ...survivors].sort((a, b) => b.timestamp - a.timestamp);
+}
 
 export default function TransactionHistory({ ethAddress, stellarAddress }: TransactionHistoryProps) {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -135,15 +167,18 @@ export default function TransactionHistory({ ethAddress, stellarAddress }: Trans
         .map(mapCoordinatorOrderToTransaction)
         .filter(isRealTransaction);
 
-      // Keyed by order id, so a row that shifted between pages shows up once.
-      // Earlier pages stay on the list: a page is added, never swapped in.
-      const local = loadFromStorage();
-      const base = seedFromCache
-        ? mergeHistoryPage<Transaction>(transactionsRef.current, local)
-        : transactionsRef.current;
-      const merged = mergeHistoryPage<Transaction>(base, remote).sort(
-        (a, b) => b.timestamp - a.timestamp
-      );
+      // A first page (or a refresh) rebuilds the list from the newest page plus
+      // the cached rows the coordinator has not reported yet. Later pages only
+      // add what they carry, so rows already on screen are never dropped.
+      //
+      // Coordinator rows stay keyed by order id: two distinct orders can share a
+      // hashlock or a lock tx, so folding the page together on those signals
+      // would hide one of them.
+      const merged = (
+        seedFromCache
+          ? dropCacheRowsSeenRemotely(loadFromStorage(), remote)
+          : mergeHistoryPage<Transaction>(transactionsRef.current, remote)
+      ).sort((a, b) => b.timestamp - a.timestamp);
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
       } catch (err) {
@@ -421,17 +456,6 @@ export default function TransactionHistory({ ethAddress, stellarAddress }: Trans
           </button>
         ))}
       </div>
-
-      {cursor && !isLoading && (
-        <button
-          onClick={refreshFromCoordinator}
-          disabled={isLoading}
-          className="button-hover-scale flex items-center justify-center gap-2 rounded-full border border-cyan-200/30 bg-cyan-200/[0.12] px-4 py-2 text-sm font-semibold text-cyan-50 shadow-[0_12px_34px_rgba(0,226,255,0.12)] transition hover:border-cyan-100/45 hover:bg-cyan-200/[0.18] disabled:opacity-60"
-        >
-          <ArrowRight className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-          Load More
-        </button>
-      )}
 
       <div className="min-h-0 space-y-3 overflow-y-auto overscroll-contain pr-1">
         {filteredTransactions.length === 0 ? (

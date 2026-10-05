@@ -67,7 +67,10 @@ vi.mock("../src/listeners/soroban.js", () => ({
   SorobanListener: class { start = mockSorobanStart; }
 }));
 vi.mock("../src/network-agreement.js", () => ({
-  checkCoordinatorNetwork: vi.fn().mockResolvedValue({ status: "ok" })
+  checkCoordinatorNetwork: vi.fn().mockResolvedValue({ status: "ok" }),
+  // `run.ts` calls this before starting listeners; a stub keeps the suite
+  // from opening a socket.
+  checkResolverNetworkAgreement: vi.fn().mockResolvedValue({ status: "ok" })
 }));
 
 import { checkPreflight, buildJsonOutput, checkCommand } from "../src/commands/check.js";

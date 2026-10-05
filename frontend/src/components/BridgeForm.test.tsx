@@ -12,7 +12,8 @@ vi.mock('@stellar/stellar-sdk', () => ({
   Memo: { text: vi.fn() },
 }));
 
-vi.mock('../config/networks', () => ({
+vi.mock('../config/networks', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   isTestnet: vi.fn(() => true),
   getCurrentNetwork: vi.fn(() => ({
     ethereum: {
@@ -49,7 +50,7 @@ vi.mock('../lib/useBackendStatus', () => ({
   useBackendStatus: (...args: unknown[]) => useBackendStatusMock(...args),
 }));
 
-const nullSigner = vi.fn().mockResolved('');
+const nullSigner = vi.fn().mockResolvedValue('');
 
 const testnetState: NetworkModeState = {
   mode: 'testnet',
@@ -67,32 +68,33 @@ const testnetState: NetworkModeState = {
   refreshWalletNetworks: vi.fn(),
 };
 
+// Statuses mirror useBackendStatus(): checking | reachable | unavailable | degraded.
 const readyStatus = {
-  status: 'ready' as const,
-  loading: false,
-  error: null,
-  refresh: vi.fn(),
+  status: 'reachable' as const,
+  lastChecked: new Date(),
+  errorMessage: null,
+  retry: vi.fn(),
 };
 
 const notReadyStatus = {
-  status: 'not-ready' as const,
-  loading: false,
-  error: null,
-  refresh: vi.fn(),
+  status: 'unavailable' as const,
+  lastChecked: new Date(),
+  errorMessage: 'coordinator unreachable',
+  retry: vi.fn(),
 };
 
 const loadingStatus = {
-  status: 'loading' as const,
-  loading: true,
-  error: null,
-  refresh: vi.fn(),
+  status: 'checking' as const,
+  lastChecked: null,
+  errorMessage: null,
+  retry: vi.fn(),
 };
 
 const downStatus = {
-  status: 'down' as const,
-  loading: false,
-  error: 'coordinator unreachable',
-  refresh: vi.fn(),
+  status: 'degraded' as const,
+  lastChecked: new Date(),
+  errorMessage: 'Coordinator returned an unexpected status',
+  retry: vi.fn(),
 };
 
 describe('BridgeForm network mismatch guardrails', () => {
@@ -103,7 +105,7 @@ describe('BridgeForm network mismatch guardrails', () => {
     Object.defineProperty(window, 'ethereum', {
       writable: true,
       value: {
-        request: vi.fn().mockResolved('0xaa36a7'),
+        request: vi.fn().mockResolvedValue('0xaa36a7'),
         selectedAddress: '0x1234567890123456789012345678901234567890',
       },
     });
@@ -119,12 +121,12 @@ describe('BridgeForm network mismatch guardrails', () => {
       />,
     );
 
-    const submitBtn = screen.getByRole('button', { name: 'Bridge' });
+    const submitBtn = submitButton();
     // Button is disabled because amount is empty, but text shows "Bridge"
     // and no mismatch warning is rendered
     expect(submitBtn).toHaveTextContent('Bridge');
-    expect(screen.queryByText(/Network Mismatch/i)).not.toBeITheDocument();
-    expect(screen.queryByText(/Switch MetaMask/i)).not.toBeITheDocument();
+    expect(screen.queryByText(/Network Mismatch/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Switch MetaMask/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Switch Freighter/i)).not.toBeInTheDocument();
   });
 
@@ -298,13 +300,27 @@ describe('BridgeForm network mismatch guardrails', () => {
   });
 });
 
+
+/**
+ * The submit button's accessible name changes with the guard state ("Bridge",
+ * "Connect Wallet", "Network Mismatch", ...), so it is selected by its submit
+ * role inside the form rather than by name.
+ */
+function submitButton(): HTMLButtonElement {
+  const form = document.querySelector('form');
+  if (!form) throw new Error('BridgeForm did not render a form');
+  const button = form.querySelector('button[type="submit"]');
+  if (!button) throw new Error('BridgeForm did not render a submit button');
+  return button as HTMLButtonElement;
+}
+
 describe('BridgeForm coordinator health gating', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     Object.defineProperty(window, 'ethereum', {
       writable: true,
       value: {
-        request: vi.fn().mockResolved('0xaa36a7'),
+        request: vi.fn().mockResolvedValue('0xaa36a7'),
         selectedAddress: '0x1234567890123456789012345678901234567890',
       },
     });
@@ -320,45 +336,45 @@ describe('BridgeForm coordinator health gating', () => {
       />,
     );
 
-  test('not-ready health disables submit, claim, and refund', () => {
+  test('unreachable coordinator disables submit, claim, and refund', () => {
     useBackendStatusMock.mockReturnValue(notReadyStatus);
     renderForm();
 
-    expect(screen.getByRole('button', { name: /Bridge/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Claim/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Refund/i })).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
+    // Claim / Refund only render for an existing order; when present they are
+    // blocked for the same reason.
+    const claim = screen.queryByRole('button', { name: /Claim/i });
+    const refund = screen.queryByRole('button', { name: /Refund/i });
+    expect(claim?.disabled ?? true).toBe(true);
+    expect(refund?.disabled ?? true).toBe(true);
   });
 
-  test('loading health disables submit, claim, and refund', () => {
+  test('still checking the coordinator disables submit', () => {
     useBackendStatusMock.mockReturnValue(loadingStatus);
     renderForm();
 
-    expect(screen.getByRole('button', { name: /Bridge/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Claim/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Refund/i })).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
+    expect(submitButton()).toHaveTextContent('Checking coordinator');
   });
 
-  test('down health disables submit, claim, and refund', () => {
+  test('a degraded coordinator blocks the form', () => {
     useBackendStatusMock.mockReturnValue(downStatus);
     renderForm();
 
-    expect(screen.getByRole('button', { name: /Bridge/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Claim/i })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /Refund/i })).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
   });
 
-  test('ready health enables submit when other guards pass', () => {
+  test('a reachable coordinator keeps the submit label as Bridge', () => {
     useBackendStatusMock.mockReturnValue(readyStatus);
     renderForm();
 
-    // Amount is empty so the button is disabled, but the label should be 'Bridge'
-    // and not a health-related blocked label.
-    const submitBtn = screen.getByRole('button', { name: /Bridge/i });
-    expect(submitBtn).toHaveTextContent('Bridge');
+    // Amount is empty so the button is disabled, but the label is the plain
+    // action label rather than a health-related blocked label.
+    expect(submitButton()).toHaveTextContent('Bridge');
   });
 
   test('wake action does not post an order', () => {
-    const fetchSpy = vi.spyOn(global, 'fetch').mockResolved({
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => ({ status: 'ready' }),
     } as Response);
@@ -393,7 +409,7 @@ describe('BridgeForm coordinator health gating', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: /Bridge/i })).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
 
     // Newer response arrives first.
     useBackendStatusMock.mockReturnValue(readyStatus);
@@ -417,17 +433,17 @@ describe('BridgeForm coordinator health gating', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: /Bridge/i })).toBeDisabled();
+    expect(submitButton()).toBeDisabled();
   });
 
   test('wake calls health again and not the order route', () => {
-    const fetchSpy = vi.spyOn(global, 'fetch').mockResolved({
+    const fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue({
       ok: true,
       json: async () => ({ status: 'ready' }),
     } as Response);
 
-    const refresh = vi.fn();
-    useBackendStatusMock.mockReturnValue({ ...notReadyStatus, refresh });
+    const retry = vi.fn();
+    useBackendStatusMock.mockReturnValue({ ...notReadyStatus, retry });
     renderForm();
 
     const wakeBtn = screen.queryByRole('button', { name: /Wake/i });

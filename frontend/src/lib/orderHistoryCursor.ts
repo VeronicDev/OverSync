@@ -41,8 +41,12 @@ export function buildHistoryQuery(input: {
   cursor?: string | null;
 }): string {
   const params = new URLSearchParams();
-  if (input.ethAddress) params.set('eth', input.ethAddress);
-  if (input.stellarAddress) params.set('stellar', input.stellarAddress);
+    // A cross-chain user holds both an EVM and a Stellar address, and the
+    // coordinator matches one address per request. `address` is therefore sent
+    // for the EVM side and `stellar` for the other, so both halves of the
+    // user's history are reachable with the query this module builds.
+    if (input.ethAddress) params.set('address', input.ethAddress);
+    if (input.stellarAddress) params.set('stellar', input.stellarAddress);
   params.set('network', input.network);
   params.set('limit', String(input.limit ?? 20));
   if (input.cursor) params.set('cursor', input.cursor);

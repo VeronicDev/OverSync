@@ -220,8 +220,9 @@ describe("HTLCEscrow v2", () => {
   });
 
   describe("claimOrder", () => {
-    it("reverts when the escrow is not bound to a resolver registry", async () => {
+    it("stays permissionless when the escrow is not bound to a resolver registry", async () => {
       const [sender, beneficiary] = await ethers.getSigners();
+      // No registry bound: neither createOrder nor claimOrder is gated.
       const escrow = await deployEscrow();
       const preimage = randomBytes32();
       const hashlock = orderHashlock(1n, preimage);
@@ -239,13 +240,14 @@ describe("HTLCEscrow v2", () => {
 
       await expect(
         escrow.connect(sender).claimOrder(1, preimage)
-      ).to.be.revertedWithCustomError(escrow, "ResolverNotAuthorised");
+      ).to.not.be.reverted;
     });
 
     it("claims successfully for a registered resolver on the bound registry pair", async () => {
       const [owner, sender, beneficiary] = await ethers.getSigners();
       const { token, registry } = await deployRegistry();
-      const stake = ethers.parseEther("1");
+      // The registry requires at least MIN_STAKE.
+      const stake = MIN_STAKE;
 
       await token.transfer(sender.address, stake);
       await token.connect(sender).approve(await registry.getAddress(), stake);
@@ -253,7 +255,7 @@ describe("HTLCEscrow v2", () => {
 
       const escrow = await deployEscrow(await registry.getAddress());
       const preimage = randomBytes32();
-      const hashlock = ethers.sha256(preimage);
+      const hashlock = orderHashlock(1n, preimage);
 
       await escrow.connect(sender).createOrder(
         beneficiary.address,
@@ -290,7 +292,7 @@ describe("HTLCEscrow v2", () => {
       await registerResolver(registry, relayer, ethers.parseEther("1"));
 
       const preimage = randomBytes32();
-      const hashlock = ethers.sha256(preimage);
+      const hashlock = orderHashlock(1n, preimage);
 
       await escrow.connect(sender).createOrder(
         beneficiary.address,
@@ -622,7 +624,7 @@ describe("HTLCEscrow v2", () => {
       const [sender, beneficiary, cleaner] = await ethers.getSigners();
       const escrow = await deployEscrow();
       const preimage = randomBytes32();
-      const hashlock = ethers.sha256(preimage);
+      const hashlock = orderHashlock(1n, preimage);
 
       await escrow.connect(sender).createOrder(
         beneficiary.address,
@@ -694,13 +696,13 @@ describe("HTLCEscrow v2", () => {
       ).to.be.revertedWithCustomError(escrow, "ResolverNotAuthorised");
     });
 
-    it("lets an active resolver create and a stranger claim permissionlessly", async () => {
+    it("lets an active resolver create and claim, but refuses a stranger claim", async () => {
       const [, beneficiary, , resolver, stranger] = await ethers.getSigners();
       const { token, registry, escrow } = await deployGatedEscrow();
       await registerResolver(token, registry, resolver);
 
       const preimage = randomBytes32();
-      const hashlock = ethers.sha256(preimage);
+      const hashlock = orderHashlock(1n, preimage);
 
       await escrow.connect(resolver).createOrder(
         beneficiary.address,
@@ -713,9 +715,14 @@ describe("HTLCEscrow v2", () => {
         { value: AMOUNT + SAFETY_DEPOSIT }
       );
 
-      // `stranger` is not a registered resolver but claim is permissionless.
+      // A bound registry gates claims too (#257): removing a resolver stops them
+      // from claiming even an order they opened while active.
+      await expect(
+        escrow.connect(stranger).claimOrder(1, preimage)
+      ).to.be.revertedWithCustomError(escrow, "ClaimResolverNotRegistered");
+
       const before = await ethers.provider.getBalance(beneficiary.address);
-      await escrow.connect(stranger).claimOrder(1, preimage);
+      await escrow.connect(resolver).claimOrder(1, preimage);
       expect(await ethers.provider.getBalance(beneficiary.address)).to.equal(before + AMOUNT);
       expect((await escrow.getOrder(1)).status).to.equal(1); // Claimed
     });
@@ -812,7 +819,7 @@ describe("HTLCEscrow v2", () => {
     /** Create a standard native-ETH order; resolver must be the sender (registry-gated). */
     async function createOrder(escrow: HTLCEscrow, resolver: any, beneficiary: any) {
       const preimage = randomBytes32();
-      const hashlock = ethers.sha256(preimage);
+      const hashlock = orderHashlock(1n, preimage);
       await escrow.connect(resolver).createOrder(
         beneficiary.address,
         resolver.address,

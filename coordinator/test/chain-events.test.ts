@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import pino from "pino";
-import { createHash } from "node:crypto";
+import { hashOrderPreimage } from "@oversync/sdk/secrets";
 import { resolve } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,7 +19,11 @@ const ETH_NET = "ethereum:11155111";
 const ETH_ADDR = "0x1111111111111111111111111111111111111111";
 const XLM_ADDR = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB422";
 const PREIMAGE = ("0x" + "ab".repeat(32)) as `0x${string}`;
-const HASHLOCK = "0x" + createHash("sha256").update(Buffer.from("ab".repeat(32), "hex")).digest("hex");
+// The hashlock is bound to the on-chain order id the lock is recorded under
+// ("7" below), exactly as the contracts derive it, so a revealed preimage
+// verifies against it.
+const SRC_ORDER_ID = 7n;
+const HASHLOCK = hashOrderPreimage(SRC_ORDER_ID, PREIMAGE);
 
 // Fixture-driven: no RPC connection is opened anywhere in this file.
 async function setup() {
@@ -45,7 +49,7 @@ async function setup() {
   const now = Math.floor(Date.now() / 1000);
   await orders.recordSrcLock({
     publicId: order.publicId,
-    orderId: "7",
+    orderId: SRC_ORDER_ID.toString(),
     txHash: "0xlock",
     blockNumber: 100,
     timelock: now + 7200
@@ -115,7 +119,7 @@ describe("ChainEventProcessor", () => {
   it("recovers from a crash after the transition but before the event was marked", async () => {
     const { repo, orders, events, publicId } = await setup();
     // Crash window: the order moved, but processed_chain_events/cursor never persisted.
-    await orders.recordRefund(publicId, refund.txHash);
+    await orders.recordRefund({ publicId, txHash: refund.txHash });
     const before = await transitionCount(repo, publicId);
 
     const counts = await events.processBatch(ETH_NET, "ethereum", [refund], 130);

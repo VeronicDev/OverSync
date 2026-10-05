@@ -50,16 +50,6 @@ export class EthereumListener {
     const address = this.cfg.ethereum.htlcEscrow;
     this.log.info({ contract: address }, "starting");
 
-    if (this.events) {
-      const saved = await this.events.resume("ethereum", this.networkId);
-      const head = await this.client.getBlockNumber();
-      if (saved) {
-        await this.catchUp(address, BigInt(saved.position), head);
-      } else {
-        await this.events.advance("ethereum", this.networkId, Number(head));
-      }
-    }
-
     this.unwatchers.push(
       this.client.watchEvent({
         address,
@@ -139,86 +129,8 @@ export class EthereumListener {
     );
   }
 
-  private async handleCreated(log: {
-    args: { hashlock?: `0x${string}`; orderId?: bigint; timelock?: bigint };
-    transactionHash: string;
-    blockNumber: bigint | null;
-  }): Promise<void> {
-    const hashlock = log.args.hashlock!;
-    try {
-      const order = await this.orders.findByHashlock(hashlock);
-      if (!order) {
-        this.log.info(
-          { hashlock, orderId: log.args.orderId?.toString() },
-          "ETH order observed without local announce"
-        );
-        return;
-      }
-      await this.orders.recordSrcLock({
-        publicId: order.publicId,
-        orderId: log.args.orderId!.toString(),
-        txHash: log.transactionHash,
-        blockNumber: Number(log.blockNumber),
-        timelock: Number(log.args.timelock!)
-      });
-    } catch (err) {
-      this.log.warn({ err, hashlock }, "could not record src lock");
-    }
-  }
-
-  /** Live path: apply one settlement event and move the cursor to its block. */
-  private async applySettlement(ev: SettlementEvent): Promise<void> {
-    if (!this.events) return;
-    try {
-      await this.events.processBatch(this.networkId, "ethereum", [ev], ev.position);
-    } catch (err) {
-      // The cursor stays behind this event, so it is redelivered on restart.
-      this.log.error({ err, txHash: ev.txHash }, "could not apply settlement event");
-    }
-  }
-
-  private async catchUp(address: `0x${string}`, from: bigint, to: bigint): Promise<void> {
-    if (!this.events || from > to) return;
-    this.log.info({ from: from.toString(), to: to.toString() }, "resuming from saved cursor");
-    const [created, claimed, refunded] = await Promise.all([
-      this.client.getLogs({ address, event: ORDER_CREATED, fromBlock: from, toBlock: to }),
-      this.client.getLogs({ address, event: ORDER_CLAIMED, fromBlock: from, toBlock: to }),
-      this.client.getLogs({ address, event: ORDER_REFUNDED, fromBlock: from, toBlock: to })
-    ]);
-    for (const log of created) await this.handleCreated(log);
-    await this.events.processBatch(
-      this.networkId,
-      "ethereum",
-      [
-        ...claimed.map((l) => toSettlement(l, "claimed")),
-        ...refunded.map((l) => toSettlement(l, "refunded"))
-      ],
-      Number(to)
-    );
-  }
-
   stop(): void {
     for (const u of this.unwatchers) u();
     this.unwatchers = [];
   }
-}
-
-function toSettlement(
-  log: {
-    args: { orderId?: bigint; preimage?: `0x${string}` };
-    transactionHash: string;
-    logIndex: number | null;
-    blockNumber: bigint | null;
-  },
-  kind: "claimed" | "refunded"
-): SettlementEvent {
-  return {
-    chain: "ethereum",
-    kind,
-    onchainOrderId: log.args.orderId!.toString(),
-    txHash: log.transactionHash,
-    logIndex: log.logIndex ?? 0,
-    position: Number(log.blockNumber),
-    preimage: kind === "claimed" ? log.args.preimage : undefined
-  };
 }

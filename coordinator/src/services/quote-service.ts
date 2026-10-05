@@ -37,6 +37,57 @@ export interface PriceQuote {
     fromNetwork: string;
     toNetwork: string;
   };
+  /** Base-unit integer the quote was bound to, when the caller supplied one. */
+  amountBaseUnits?: string;
+  /**
+   * Which order terms the caller actually quoted. A quote issued for an amount
+   * alone carries none of them, so `assertMatches` must not compare defaults
+   * it invented against the order's real terms.
+   */
+  quotedTerms?: QuoteTerms;
+}
+
+export class AmountParseError extends Error {
+  constructor(public readonly raw: string) {
+    super(`Invalid amount: ${JSON.stringify(raw)}`);
+    this.name = "AmountParseError";
+  }
+}
+
+export class QuoteAmountMismatchError extends Error {
+  constructor(
+    public readonly quoteId: string,
+    public readonly expected: string,
+    public readonly actual: string | bigint
+  ) {
+    super(`Order amount ${String(actual)} does not match quote ${quoteId} amount ${expected}`);
+    this.name = "QuoteAmountMismatchError";
+  }
+}
+
+const DECIMAL_AMOUNT = /^(\d+)(?:\.(\d*))?$|^\.(\d+)$/;
+const BASE_UNIT_INTEGER = /^(0|[1-9]\d*)$/;
+
+/**
+ * Parse a decimal amount into token base units using only string/BigInt
+ * arithmetic (no floating point). Throws `AmountParseError` for empty
+ * input, signs, exponents, non-digits, or more fractional digits than
+ * `decimals` allows. Mirrors `frontend/src/lib/sanitizeAmountInput.ts`.
+ */
+export function parseAmountToBaseUnits(raw: string, decimals: number): bigint {
+  if (!Number.isInteger(decimals) || decimals < 0) throw new AmountParseError(raw);
+  const match = DECIMAL_AMOUNT.exec(raw.trim());
+  if (!match) throw new AmountParseError(raw);
+  const whole = match[1] ?? "0";
+  const frac = match[2] ?? match[3] ?? "";
+  if (frac.length > decimals) throw new AmountParseError(raw);
+  return BigInt(whole) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, "0") || "0");
+}
+
+/** Parse an already-base-unit integer string. Throws `AmountParseError` when malformed. */
+export function parseBaseUnitInteger(raw: string): bigint {
+  if (!BASE_UNIT_INTEGER.test(raw.trim())) throw new AmountParseError(raw);
+  return BigInt(raw.trim());
 }
 
 export class QuoteExpiredError extends Error {
@@ -97,10 +148,52 @@ export class QuoteService {
    * The returned object always has a unique `quoteId` so callers
    * can reference it when announcing an order.
    */
-  async quoteEthXlm(terms: QuoteTerms): Promise<PriceQuote> {
+  async quoteEthXlm(
+    terms?: Partial<QuoteTerms> & { amountBaseUnits?: string }
+  ): Promise<PriceQuote> {
+    if (terms?.amountBaseUnits !== undefined) {
+      // Validate eagerly so a malformed amount never becomes a quote.
+      parseBaseUnitInteger(terms.amountBaseUnits);
+    }
+    // Only remember the terms the caller actually quoted. Filling in defaults
+    // for the rest would make `assertMatches` compare terms the caller never
+    // asked to be quoted against.
+    const quotedTerms: QuoteTerms | undefined =
+      terms?.srcChain !== undefined &&
+      terms?.srcAsset !== undefined &&
+      terms?.srcAmount !== undefined &&
+      terms?.dstChain !== undefined &&
+      terms?.dstAsset !== undefined &&
+      terms?.dstAmount !== undefined
+        ? {
+            srcChain: terms.srcChain,
+            srcAsset: terms.srcAsset,
+            srcAmount: terms.srcAmount,
+            dstChain: terms.dstChain,
+            dstAsset: terms.dstAsset,
+            dstAmount: terms.dstAmount,
+          }
+        : undefined;
+    const fullTerms: QuoteTerms = quotedTerms ?? {
+      srcChain: "ethereum",
+      srcAsset: "native",
+      srcAmount: terms?.amountBaseUnits ?? "0",
+      dstChain: "stellar",
+      dstAsset: "native",
+      dstAmount: "0",
+    };
     const cached = this.priceCache.get("ETH-XLM");
     if (cached && this.now() < cached.expiresAt) {
-      return this.issueQuote(terms, cached.srcUsd, cached.dstUsd, "cache", cached.expiresAt);
+      return this.issueQuote(
+        fullTerms,
+        cached.srcUsd,
+        cached.dstUsd,
+        "cache",
+        cached.expiresAt,
+        undefined,
+        terms?.amountBaseUnits,
+        quotedTerms
+      );
     }
 
     let ethUsd: string | null = null;
@@ -124,7 +217,16 @@ export class QuoteService {
     const issuedAt = this.now();
     const expiresAt = issuedAt + this.cacheTtlMs;
     this.priceCache.set("ETH-XLM", { srcUsd: ethUsd, dstUsd: xlmUsd, expiresAt });
-    return this.issueQuote(terms, ethUsd, xlmUsd, source, expiresAt, issuedAt);
+    return this.issueQuote(
+      fullTerms,
+      ethUsd,
+      xlmUsd,
+      source,
+      expiresAt,
+      issuedAt,
+      terms?.amountBaseUnits,
+      quotedTerms
+    );
   }
 
   /**
@@ -173,22 +275,31 @@ export class QuoteService {
     }
     if (quote.amountBaseUnits !== undefined && orderAmountBaseUnits !== undefined) {
       const orderAmount = parseBaseUnitInteger(orderAmountBaseUnits);
-      if (orderAmount !== quote.amountBaseUnits) {
+      if (orderAmount.toString() !== quote.amountBaseUnits) {
         throw new QuoteAmountMismatchError(quoteId, quote.amountBaseUnits, orderAmount);
       }
     }
     return quote;
   }
 
+  /**
+   * Assert the order's terms are the ones that were quoted.
+   *
+   * Only compares the terms the quote actually carries: a quote issued for an
+   * amount alone has no terms to check, and the amount gate in `assertFresh`
+   * already covers it.
+   */
   assertMatches(quoteId: string, terms: QuoteTerms): PriceQuote {
     const quote = this.assertFresh(quoteId);
+    const quoted = quote.quotedTerms;
     if (
-      quote.srcChain !== terms.srcChain ||
-      quote.srcAsset !== terms.srcAsset ||
-      quote.srcAmount !== terms.srcAmount ||
-      quote.dstChain !== terms.dstChain ||
-      quote.dstAsset !== terms.dstAsset ||
-      quote.dstAmount !== terms.dstAmount
+      quoted &&
+      (quoted.srcChain !== terms.srcChain ||
+        quoted.srcAsset !== terms.srcAsset ||
+        quoted.srcAmount !== terms.srcAmount ||
+        quoted.dstChain !== terms.dstChain ||
+        quoted.dstAsset !== terms.dstAsset ||
+        quoted.dstAmount !== terms.dstAmount)
     ) {
       throw new QuoteTermsMismatchError(quoteId);
     }
@@ -228,7 +339,9 @@ export class QuoteService {
     dstUsd: string | null,
     source: PriceQuote["source"],
     expiresAt: number,
-    issuedAt = this.now()
+    issuedAt = this.now(),
+    amountBaseUnits?: string,
+    quotedTerms?: QuoteTerms
   ): PriceQuote {
     const quote: PriceQuote = {
       ...terms,
@@ -238,7 +351,9 @@ export class QuoteService {
       dstUsd,
       source,
       issuedAt,
-      expiresAt
+      expiresAt,
+      ...(amountBaseUnits !== undefined ? { amountBaseUnits } : {}),
+      ...(quotedTerms !== undefined ? { quotedTerms } : {}),
     };
     this.quotes.set(quote.quoteId, quote);
     this.log.debug({ quoteId: quote.quoteId, source }, "quote issued");

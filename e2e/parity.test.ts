@@ -45,9 +45,13 @@ describe("HTLC authorization parity (EVM ↔ Soroban)", () => {
         expect(runMatrix(factory)["second-claim"]).toBe("OrderNotClaimable");
       });
 
-      it("keeps claim/refund permissionless despite the registry gate", () => {
+      it("gates claims on the registry but leaves refunds permissionless", () => {
         const results = runMatrix(factory);
-        expect(results["unregistered-resolver-claims"]).toBe("ok");
+        // A bound registry refuses a claim from a non-resolver...
+        expect(results["unregistered-resolver-claims"]).toBe("ClaimResolverNotRegistered");
+        // ...while an active resolver can still claim...
+        expect(results["active-resolver-claims"]).toBe("ok");
+        // ...and refunds stay permissionless.
         expect(results["unregistered-resolver-refunds"]).toBe("ok");
       });
     });

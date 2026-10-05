@@ -1,7 +1,8 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import type { OrderRow, OrderSnapshot } from "../../persistence/orders-repo.js";
-import { announceSchema, OrderService, OrderValidationError } from "../../services/order-service.js";
+import { announceSchema, OrderService, OrderValidationError, isTransitionRejection } from "../../services/order-service.js";
+import { evaluateRefundEligibility } from "../../utils/timelock-validator.js";
 import {
   encodeHistoryCursor,
   validateHistoryCursor,
@@ -38,7 +39,31 @@ function readHistoryAddress(query: Request["query"]): string {
   return "";
 }
 
-function orderValidationResponse(err: OrderValidationError): { status: number; body: Record<string, unknown> } {
+/**
+ * Map an announce/transition refusal to a status and body.
+ *
+ * Quote refusals keep their own codes: a client that quoted, then announced
+ * against a stale or drifted quote needs to know which rule it hit, so it can
+ * re-quote instead of retrying the same payload.
+ */
+function orderValidationResponse(err: unknown): { status: number; body: Record<string, unknown> } {
+  // Quote refusals answer with their own code so a client can tell which
+  // quote rule it hit and re-quote instead of retrying the same payload.
+  if (err instanceof OrderValidationError) {
+    switch (err.code) {
+      case "QUOTE_EXPIRED":
+        return { status: 400, body: { error: "quote_expired", message: err.message } };
+      case "QUOTE_NOT_FOUND":
+        return { status: 400, body: { error: "quote_not_found", message: err.message } };
+      case "INVALID_AMOUNT":
+        return { status: 400, body: { error: "invalid_amount", message: err.message } };
+      case "QUOTE_MISMATCH":
+        return { status: 400, body: { error: "quote_mismatch", message: err.message } };
+    }
+  }
+  if (!(err instanceof OrderValidationError)) {
+    return { status: 400, body: { error: "order_validation_error", message: String(err) } };
+  }
   // A refused lifecycle edge is a conflict with the stored order, not a bad
   // request: answer 409 with the stable failure code so clients can tell an
   // illegal transition apart from a malformed payload (issue #252).

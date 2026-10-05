@@ -64,7 +64,8 @@ export class SimError extends Error {
 export interface HtlcSim {
   readonly name: "evm" | "soroban";
   createOrder(input: CreateOrderInput): bigint;
-  claimOrder(id: bigint, preimage: Hex): void;
+  /** `claimer` is the address submitting the claim; the registry gate reads it. */
+  claimOrder(id: bigint, preimage: Hex, claimer?: string): void;
   refundOrder(id: bigint): void;
   getOrder(id: bigint): OrderView;
   nextOrderId(): bigint;
@@ -106,6 +107,28 @@ abstract class BaseHtlcSim {
     return this.nextId;
   }
 
+  setRegistryEnabled(enabled: boolean): void {
+    this.registryEnabled = enabled;
+  }
+
+  setResolverActive(resolver: string, active: boolean): void {
+    const key = resolver.toLowerCase();
+    if (active) this.activeResolvers.add(key);
+    else this.activeResolvers.delete(key);
+  }
+
+  /**
+   * The registry gate both contracts apply to `claimOrder` once one is bound:
+   * the caller must be currently active. Refunds stay permissionless.
+   */
+  protected assertClaimAuthorised(claimer?: string): void {
+    if (!this.registryEnabled) return;
+    const caller = claimer?.toLowerCase();
+    if (!caller || !this.activeResolvers.has(caller)) {
+      throw new SimError("ClaimResolverNotRegistered");
+    }
+  }
+
   createOrder(input: CreateOrderInput): bigint {
     if (!/^0x[0-9a-fA-F]{64}$/.test(input.hashlock) || /^0x0+$/.test(input.hashlock)) {
       throw new SimError("InvalidHashlock");
@@ -118,6 +141,9 @@ abstract class BaseHtlcSim {
       if (!sender || !this.activeResolvers.has(sender)) {
         throw new SimError("ResolverNotAuthorised");
       }
+    }
+    if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(input.hashlock)) {
+      throw new SimError("InvalidHashlock");
     }
     const id = this.nextId++;
     const amount = input.amount ?? DEFAULT_ESCROW_AMOUNT;
@@ -198,11 +224,12 @@ abstract class BaseHtlcSim {
 export class EvmHtlcSim extends BaseHtlcSim implements HtlcSim {
   readonly name = "evm" as const;
 
-  claimOrder(id: bigint, preimage: Hex): void {
+  claimOrder(id: bigint, preimage: Hex, claimer?: string): void {
     const o = this.getMutable(id);
     if (o.status !== "Funded") throw new SimError("OrderNotClaimable");
     if (this.now > o.timelockAbsolute) throw new SimError("Expired");
-    if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(preimage)) {
+    this.assertClaimAuthorised(claimer);
+    if (preimage.length === 0) {
       throw new SimError("InvalidPreimage");
     }
     if (hashOrderPreimage(id, preimage) !== o.hashlock) {
@@ -222,11 +249,12 @@ export class EvmHtlcSim extends BaseHtlcSim implements HtlcSim {
 export class SorobanHtlcSim extends BaseHtlcSim implements HtlcSim {
   readonly name = "soroban" as const;
 
-  claimOrder(id: bigint, preimage: Hex): void {
+  claimOrder(id: bigint, preimage: Hex, claimer?: string): void {
     const o = this.getMutable(id);
     if (o.status !== "Funded") throw new SimError("OrderNotClaimable");
     if (this.now > o.timelockAbsolute) throw new SimError("Expired");
-    if (!/^0x(?:[0-9a-fA-F]{2})+$/.test(preimage)) {
+    this.assertClaimAuthorised(claimer);
+    if (preimage.length === 0) {
       throw new SimError("InvalidPreimage");
     }
     if (hashOrderPreimage(id, preimage) !== o.hashlock) {

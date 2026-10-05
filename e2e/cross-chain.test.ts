@@ -1,8 +1,22 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, beforeAll, afterAll, afterEach } from "vitest";
 import { generateSecret, hashSecret, hashOrderPreimage, verifyPreimage } from "@oversync/sdk/secrets";
-import { EvmHtlcSim, SorobanHtlcSim, type HtlcSim } from "./sim.js";
-import { startEvmFixture, type RealEvmHtlcFixture } from "./evm-fixture.js";
+import {
+  DEFAULT_ESCROW_AMOUNT,
+  EvmHtlcSim,
+  OneSidedReleaseError,
+  SorobanHtlcSim,
+  assertEscrowReleasedTogether,
+  type ChainSide,
+  type CrossChainLeg,
+  type HtlcSim,
+} from "./sim.js";
+import {
+  ESCROW_AMOUNT,
+  HARDHAT_TEST_KEYS,
+  startEvmFixture,
+  type RealEvmHtlcFixture,
+} from "./evm-fixture.js";
 
 const TIMELOCK_SECONDS = 600;
 const PAST_TIMELOCK = TIMELOCK_SECONDS + 1;
@@ -136,15 +150,17 @@ describe("cross-chain HTLC differential harness", () => {
     function fundedPair(secret: ReturnType<typeof generateSecret>) {
       const evm = new EvmHtlcSim();
       const stellar = new SorobanHtlcSim();
+      // Both legs commit to the order-bound hashlock for their own order id, the
+      // way the two contracts do.
       const evmId = evm.createOrder({
-        hashlock: secret.sha256,
+        hashlock: hashOrderPreimage(evm.nextOrderId(), secret.preimage),
         timelockSeconds: TIMELOCK_SECONDS,
         amount: AMOUNT,
         maker: "evm-maker",
         recipient: "evm-recipient"
       });
       const stellarId = stellar.createOrder({
-        hashlock: secret.sha256,
+        hashlock: hashOrderPreimage(stellar.nextOrderId(), secret.preimage),
         timelockSeconds: TIMELOCK_SECONDS,
         amount: AMOUNT,
         maker: "stellar-maker",
