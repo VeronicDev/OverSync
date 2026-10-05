@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 9,
+    "address": 10,
     "nonce": 0
   },
   "auth": [
@@ -174,7 +174,6 @@
         }
       ]
     ],
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
@@ -209,7 +208,7 @@
                   }
                 },
                 {
-                  "bytes": "80a655916dded3c87fa1747023db78ae105ec1c045d85b0c7582b203f4cde49e"
+                  "bytes": "1f6dec255d6ef882b3f50383cd938eeb8caa66db52cb5e0c658e8f1b2f140a00"
                 },
                 {
                   "u64": 600
@@ -246,6 +245,8 @@
       ]
     ],
     [],
+    [],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
@@ -259,7 +260,7 @@
                   "u64": 1
                 },
                 {
-                  "bytes": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+                  "bytes": "2222222222222222222222222222222222222222222222222222222222222222"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
@@ -271,6 +272,7 @@
         }
       ]
     ],
+    [],
     []
   ],
   "ledger": {
@@ -528,7 +530,7 @@
                         "symbol": "hashlock"
                       },
                       "val": {
-                        "bytes": "80a655916dded3c87fa1747023db78ae105ec1c045d85b0c7582b203f4cde49e"
+                        "bytes": "1f6dec255d6ef882b3f50383cd938eeb8caa66db52cb5e0c658e8f1b2f140a00"
                       }
                     },
                     {
@@ -544,7 +546,7 @@
                         "symbol": "preimage"
                       },
                       "val": {
-                        "bytes": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+                        "bytes": "2222222222222222222222222222222222222222222222222222222222222222"
                       }
                     },
                     {
@@ -955,7 +957,7 @@
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
             "key": {
               "ledger_key_nonce": {
-                "nonce": 6277191135259896685
+                "nonce": 5806905060045992000
               }
             },
             "durability": "temporary"
@@ -970,7 +972,7 @@
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5",
                 "key": {
                   "ledger_key_nonce": {
-                    "nonce": 6277191135259896685
+                    "nonce": 5806905060045992000
                   }
                 },
                 "durability": "temporary",

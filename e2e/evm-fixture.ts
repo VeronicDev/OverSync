@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
 import { ethers, type ErrorFragment, type InterfaceAbi } from "ethers";
 
 export type Hex = `0x${string}`;
@@ -34,7 +35,6 @@ const SAFETY_DEPOSIT = 0n;
 /** The escrow value locked per order, exported so tests can assert balances. */
 export const ESCROW_AMOUNT = AMOUNT;
 const ZERO_ADDR = ethers.ZeroAddress;
-const HARDHAT_RPC = "http://127.0.0.1:8545";
 const DEPLOYER_KEY =
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const BENEFICIARY_KEY =
@@ -81,11 +81,30 @@ function decodeCustomError(abi: InterfaceAbi, data: string | undefined): string 
   return null;
 }
 
-/** Spawn a Hardhat node and wait until it is ready to accept connections. */
-async function spawnHardhatNode(): Promise<ChildProcess> {
-  const contractsDir = join(__dirname, "../contracts");
+/** Ask the OS for a free TCP port, then release it for the node to bind. */
+function reserveFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        server.close(() => reject(new Error("Could not reserve a port for the Hardhat node")));
+        return;
+      }
+      const { port } = address;
+      server.close(() => resolve(port));
+    });
+  });
+}
 
-  const node = spawn("pnpm", ["hardhat", "node"], {
+/** Spawn a Hardhat node on a free port and wait until it accepts connections. */
+async function spawnHardhatNode(): Promise<{ node: ChildProcess; rpcUrl: string }> {
+  const contractsDir = join(__dirname, "../contracts");
+  const port = await reserveFreePort();
+  const rpcUrl = `http://127.0.0.1:${port}`;
+
+  const node = spawn("pnpm", ["hardhat", "node", "--port", String(port)], {
     cwd: contractsDir,
     stdio: ["ignore", "pipe", "pipe"],
     shell: true,
@@ -119,7 +138,7 @@ async function spawnHardhatNode(): Promise<ChildProcess> {
     });
   });
 
-  return node;
+  return { node, rpcUrl };
 }
 
 // ── Fixture ───────────────────────────────────────────────────────────────────
@@ -130,10 +149,10 @@ export async function startEvmFixture(): Promise<RealEvmHtlcFixture> {
   const artifact = JSON.parse(readFileSync(artifactPath, "utf8"));
   const HTLC_ABI = artifact.abi;
   const HTLC_BYTECODE = artifact.bytecode as string;
-  // Spawn a fresh Hardhat node for this test
-  const nodeProcess = await spawnHardhatNode();
+  // Spawn a fresh Hardhat node on a free port for this test
+  const { node: nodeProcess, rpcUrl } = await spawnHardhatNode();
 
-  const provider = new ethers.JsonRpcProvider(HARDHAT_RPC, undefined, {
+  const provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
     cacheTimeout: -1,
     polling: true,
   });

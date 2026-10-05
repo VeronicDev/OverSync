@@ -536,10 +536,9 @@ fn create_order_succeeds_for_active_registered_resolver() {
     assert_eq!(order_id, 1);
     assert_eq!(token.balance(&htlc.address), amount);
 
-    // Claim path must remain permissionless even though the registry is
-    // configured — the registry only gates create_order.
-    let outsider = Address::generate(&env);
-    htlc.claim_order(&order_id, &preimage, &outsider);
+    // A bound registry gates claims too: the active resolver that opened the
+    // order settles it.
+    htlc.claim_order(&order_id, &preimage, &resolver);
     let order: Order = htlc.get_order(&order_id).unwrap();
     assert_eq!(order.status, OrderStatus::Claimed);
 }
@@ -699,7 +698,7 @@ fn second_refund_fails() {
     sac.mint(&sender, &100_0000000);
 
     let preimage = Bytes::from_array(&env, &[31u8; 32]);
-    let hashlock = sha256_32(&env, &preimage);
+    let hashlock = hashlock_order_one(&env, &preimage);
     let order_id = htlc.create_order(
         &sender, &beneficiary, &sender, &asset,
         &10_0000000i128, &0i128, &hashlock, &600u64,
@@ -737,9 +736,10 @@ fn refund_unknown_order_fails_not_found() {
 }
 
 #[test]
-fn claim_by_unregistered_caller_succeeds_when_registry_configured() {
-    // Mirror of row 13: the registry gates creation only, so a caller
-    // that is not an active resolver may still reveal the preimage.
+fn claim_by_unregistered_caller_fails_when_registry_configured() {
+    // A bound registry gates claims as well as creation, matching
+    // `HTLCEscrow.claimOrder`: removing a resolver stops them settling an order
+    // they opened while active.
     let env = Env::default();
     env.mock_all_auths();
 
@@ -756,7 +756,7 @@ fn claim_by_unregistered_caller_succeeds_when_registry_configured() {
     registry.register(&resolver, &min_stake);
 
     let preimage = Bytes::from_array(&env, &[34u8; 32]);
-    let hashlock = sha256_32(&env, &preimage);
+    let hashlock = hashlock_order_one(&env, &preimage);
     let amount = 100_0000000i128;
     let order_id = htlc.create_order(
         &resolver, &beneficiary, &resolver, &asset,
@@ -764,11 +764,22 @@ fn claim_by_unregistered_caller_succeeds_when_registry_configured() {
     );
 
     let stranger = Address::generate(&env);
-    htlc.claim_order(&order_id, &preimage, &stranger);
+    let res = htlc.try_claim_order(&order_id, &preimage, &stranger);
+    assert_eq!(
+        res.err().unwrap().unwrap(),
+        Error::ClaimResolverNotRegistered.into()
+    );
 
-    assert_eq!(token.balance(&beneficiary), amount);
+    // The order is untouched: the refund path is still available to anyone.
     let order: Order = htlc.get_order(&order_id).unwrap();
-    assert_eq!(order.status, OrderStatus::Claimed);
+    assert_eq!(order.status, OrderStatus::Funded);
+    assert_eq!(token.balance(&beneficiary), 0);
+
+    // The resolver that opened it can still claim.
+    htlc.claim_order(&order_id, &preimage, &resolver);
+    assert_eq!(token.balance(&beneficiary), amount);
+    let claimed: Order = htlc.get_order(&order_id).unwrap();
+    assert_eq!(claimed.status, OrderStatus::Claimed);
 }
 
 #[test]
@@ -792,7 +803,7 @@ fn refund_by_unregistered_caller_succeeds_when_registry_configured() {
     registry.register(&resolver, &min_stake);
 
     let preimage = Bytes::from_array(&env, &[33u8; 32]);
-    let hashlock = sha256_32(&env, &preimage);
+    let hashlock = hashlock_order_one(&env, &preimage);
     let amount = 100_0000000i128;
     let order_id = htlc.create_order(
         &resolver, &beneficiary, &resolver, &asset,

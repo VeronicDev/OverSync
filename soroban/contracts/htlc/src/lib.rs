@@ -77,6 +77,8 @@ pub enum Error {
     SafetyDepositTooSmall = 12,
     /// Caller is not authorised as a resolver.
     ResolverNotAuthorised = 13,
+    /// Caller is not an active resolver, so it may not claim this order.
+    ClaimResolverNotRegistered = 15,
     /// Internal arithmetic overflow.
     Overflow = 14,
 }
@@ -341,6 +343,25 @@ impl HtlcContract {
         }
         if env.ledger().timestamp() > order.timelock {
             panic_with_error!(&env, Error::Expired);
+        }
+
+        // When a resolver registry is bound it gates claims as well as
+        // creation, matching `HTLCEscrow.claimOrder` on the EVM side: removing a
+        // resolver must stop them settling an order they opened while active.
+        // Refunds stay permissionless.
+        if let Some(registry) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ResolverRegistry)
+        {
+            let active: bool = env.invoke_contract(
+                &registry,
+                &Symbol::new(&env, "is_active"),
+                vec![&env, caller.into_val(&env)],
+            );
+            if !active {
+                panic_with_error!(&env, Error::ClaimResolverNotRegistered);
+            }
         }
 
         if preimage.len() == 0 {
