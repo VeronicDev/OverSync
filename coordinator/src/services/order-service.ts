@@ -23,7 +23,14 @@ import {
   type OrderTransitionAction
 } from "../state-machine/order-machine.js";
 import { illegalOrderTransitions, ordersTotal } from "../metrics.js";
-import { QuoteService, QuoteExpiredError, QuoteNotFoundError } from "./quote-service.js";
+import {
+  AmountParseError,
+  QuoteAmountMismatchError,
+  QuoteExpiredError,
+  QuoteNotFoundError,
+  QuoteService,
+  QuoteTermsMismatchError,
+} from "./quote-service.js";
 import { loadConfig } from "../config.js";
 import {
   validateTimelocksAtCreation,
@@ -81,16 +88,54 @@ export type AnnounceInput = z.infer<typeof announceSchema>;
  * Codes an `OrderValidationError` can carry: the timelock ordering codes and
  * the stable order state machine failure codes.
  */
-export type OrderErrorCode = TimelockValidationError | OrderFailureCode;
+/**
+ * Quote-gate codes, added to the codes an `OrderValidationError` can carry so
+ * a client that quoted and then announced can tell *which* quote rule it hit
+ * (re-quote) instead of retrying the same payload.
+ */
+export type OrderQuoteErrorCode =
+  | "QUOTE_EXPIRED"
+  | "QUOTE_NOT_FOUND"
+  | "QUOTE_MISMATCH"
+  | "INVALID_AMOUNT";
+
+export type OrderErrorCode =
+  | TimelockValidationError
+  | OrderFailureCode
+  | OrderQuoteErrorCode;
 
 export class OrderValidationError extends Error {
   readonly code?: OrderErrorCode;
+  /** The original typed quote error, kept for logs and route mapping. */
+  readonly cause?: unknown;
 
-  constructor(message: string, code?: TimelockValidationError) {
+  constructor(
+    message: string,
+    code?: TimelockValidationError | OrderQuoteErrorCode,
+    cause?: unknown
+  ) {
     super(message);
     this.name = "OrderValidationError";
     this.code = code;
+    this.cause = cause;
   }
+}
+
+/** Wraps a typed quote refusal in an `OrderValidationError` carrying its code. */
+function orderQuoteError(err: unknown): OrderValidationError {
+  const code: OrderQuoteErrorCode =
+    err instanceof QuoteExpiredError
+      ? "QUOTE_EXPIRED"
+      : err instanceof QuoteNotFoundError
+        ? "QUOTE_NOT_FOUND"
+        : err instanceof AmountParseError
+          ? "INVALID_AMOUNT"
+          : "QUOTE_MISMATCH";
+  return new OrderValidationError(
+    err instanceof Error ? err.message : String(err),
+    code,
+    err
+  );
 }
 
 function assertTimelocksAtCreation(
@@ -245,12 +290,25 @@ export class OrderService {
     const hashlock = input.hashlock.toLowerCase() as `0x${string}`;
 
     // --- Quote freshness gate -------------------------------------------
+    // The quote is re-read here rather than trusted from the client: an order
+    // may only be created against a live quote whose terms it still matches.
+    // Refusals keep their typed error so the route can answer with the right
+    // status and code instead of a generic validation error.
     if (input.quoteId) {
       if (!this.quoteService) {
         // No QuoteService wired in (e.g. test mode without quotes) — skip.
         this.log.debug({ quoteId: input.quoteId }, "quoteId supplied but no QuoteService wired; skipping freshness check");
       } else {
         try {
+          this.quoteService.assertMatches(input.quoteId, {
+            srcChain: input.srcChain,
+            srcAsset: input.srcAsset,
+            srcAmount: input.srcAmount,
+            dstChain: input.dstChain,
+            dstAsset: input.dstAsset,
+            dstAmount: input.dstAmount,
+          });
+          this.quoteService.assertFresh(input.quoteId, input.srcAmount);
           this.quoteService.bindOrderTerms(input.quoteId, {
             fromAsset: input.srcAsset,
             toAsset: input.dstAsset,
@@ -260,8 +318,14 @@ export class OrderService {
           });
           this.log.debug({ quoteId: input.quoteId }, "quote freshness confirmed");
         } catch (err) {
-          if (err instanceof QuoteExpiredError || err instanceof QuoteNotFoundError) {
-            throw new OrderValidationError(err.message);
+          if (
+            err instanceof QuoteExpiredError ||
+            err instanceof QuoteNotFoundError ||
+            err instanceof QuoteAmountMismatchError ||
+            err instanceof QuoteTermsMismatchError ||
+            err instanceof AmountParseError
+          ) {
+            throw orderQuoteError(err);
           }
           throw err;
         }
@@ -409,21 +473,80 @@ export class OrderService {
     });
   }
 
-  async recordSecret(publicId: string, preimage: string, txHash: string): Promise<void> {
-    const order = await this.repo.findByPublicId(publicId);
-    if (!order) throw new OrderValidationError(`unknown order ${publicId}`);
-    if (order.status === "secret_revealed") {
-      // Idempotent: same preimage for the same order is always accepted,
-      // even if the txHash differs (e.g. a second chain event observer).
-      if (order.preimage === preimage) return;
-      throw new StaleOrderEventError(`conflicting secret event for ${publicId}`);
-    }
-    if (!canTransition(order.status, "secret_revealed")) {
-      throw new StaleOrderEventError(`stale secret event for order in status ${order.status}`);
-    }
-    await this.repo.recordSecretRevealed({ publicId, preimage, txHash });
-    this.log.info({ publicId }, "secret recorded");
-    ordersTotal.inc({ status: "secret_revealed" });
+  /**
+   * Preimage relayed for an order (`secret` edge).
+   *
+   * The preimage is the identity of this step, the transaction hash is only
+   * provenance: the same preimage can legitimately be relayed from a second
+   * transaction (a claim observed on the other chain, an RPC retry, a re-org),
+   * so re-relaying it is idempotent instead of a conflict.
+   */
+  async recordSecret(
+    publicId: string,
+    preimage: string,
+    txHash: string,
+    writer?: string
+  ): Promise<void> {
+    const canonical = preimage.toLowerCase();
+    await this.advance({
+      publicId,
+      action: "secret",
+      txHash,
+      writer,
+      isSameStep: (order) => order.preimage === canonical,
+      logMessage: "secret recorded",
+      apply: async () => {
+        await this.repo.recordSecretRevealed({ publicId, preimage: canonical, txHash });
+      },
+    });
+  }
+
+  /**
+   * The order was claimed on chain (`claim` edge).
+   *
+   * Refused unless the preimage has been recorded first — that is the guard
+   * against a listener settling an order twice or settling one whose secret
+   * the coordinator never saw.
+   */
+  async recordClaim(input: {
+    publicId: string;
+    txHash: string;
+    writer?: string;
+  }): Promise<void> {
+    await this.advance({
+      publicId: input.publicId,
+      action: "claim",
+      txHash: input.txHash,
+      writer: input.writer,
+      // A second claim for an order that is already completed is the same
+      // settlement observed again — idempotent, never a second payout.
+      isSameStep: () => true,
+      logMessage: "claim recorded",
+      logFields: { txHash: input.txHash },
+      apply: async () => {
+        await this.repo.setStatus(input.publicId, "completed", input.txHash);
+      },
+    });
+  }
+
+  /** A refund was observed on chain (`refund` edge). */
+  async recordRefund(input: {
+    publicId: string;
+    txHash: string;
+    writer?: string;
+  }): Promise<void> {
+    await this.advance({
+      publicId: input.publicId,
+      action: "refund",
+      txHash: input.txHash,
+      writer: input.writer,
+      isSameStep: () => true,
+      logMessage: "refund recorded",
+      logFields: { txHash: input.txHash },
+      apply: async () => {
+        await this.repo.setStatus(input.publicId, "refunded", input.txHash);
+      },
+    });
   }
 
   async getOrderMetrics(): Promise<OrderMetrics> {

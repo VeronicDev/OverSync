@@ -17,6 +17,25 @@ import { evaluateSecretWindow } from "../utils/timelock-validator.js";
  * at most once per order; re-relayed duplicates are a no-op that never
  * rewrites storage.
  */
+export interface SecretServiceOptions {
+  /** Injected clock for testing — defaults to Date.now(). */
+  now?: () => number;
+}
+
+export class SecretExpiredError extends Error {
+  constructor(message = "secret window expired") {
+    super(message);
+    this.name = "SecretExpiredError";
+  }
+}
+
+export class SecretConflictError extends Error {
+  constructor(message = "conflicting secret for order") {
+    super(message);
+    this.name = "SecretConflictError";
+  }
+}
+
 export class SecretService {
   private readonly now: () => number;
 
@@ -67,7 +86,14 @@ export class SecretService {
     const orderIds = [order.srcOrderId, order.dstOrderId].filter(
       (orderId): orderId is string => orderId !== null
     );
-    const matchesKnownOrders = orderIds.length > 0 && orderIds.every((orderId) => {
+    // The stored hashlock is bound to one on-chain order id (whichever leg
+    // the user committed first), while the order may carry a different id on
+    // its other leg. So the preimage has to reproduce the hashlock under *any*
+    // known id of this order — requiring all of them to match would refuse
+    // every dual-leg order. Matching any known id still means the preimage
+    // was derived from this order's own hashlock, so a caller cannot poison
+    // the cache with a preimage from a different order.
+    const matchesKnownOrders = orderIds.some((orderId) => {
       if (!/^\d+$/.test(orderId)) return false;
       return hashOrderPreimage(BigInt(orderId), canonical) === order.hashlock;
     });

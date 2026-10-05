@@ -15,7 +15,6 @@ import {
   Keypair,
   TransactionBuilder,
   nativeToScVal,
-  type SorobanRpc,
 } from "@stellar/stellar-sdk";
 import { loadConfig } from "../config.js";
 import { getLogger } from "../logger.js";
@@ -216,7 +215,7 @@ async function validateSorobanRegistry(
   }
 
   let alreadyActive = false;
-  const retval = (sim as SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+  const retval = (sim as any).result?.retval;
   if (retval && retval.switch().name === "scvBool") {
     alreadyActive = retval.b();
   }
@@ -279,7 +278,7 @@ async function registerSoroban(
   }
 
   // Poll for confirmation
-  let finalStatus = sendResult.status;
+  let finalStatus: string = sendResult.status;
   const txHash = sendResult.hash;
   log.info({ txHash }, "Soroban: register transaction submitted, polling for confirmation");
 
@@ -474,74 +473,6 @@ function ensureEvmContext() {
   const walletClient = createWalletClient({ chain, account, transport: http(cfg.ethereum.rpcUrl) });
 
   return { cfg, log, account, publicClient, walletClient };
-}
-
-export async function registerCommand(amountInput?: string): Promise<void> {
-  const cfg = loadConfig();
-  
-  // Check network agreement before any transaction
-  const agreement = await checkResolverNetworkAgreement(
-    cfg.network,
-    cfg.ethereum.rpcUrl,
-    cfg.soroban.rpcUrl,
-    cfg.soroban.networkPassphrase
-  );
-  if (agreement.status === "fail") {
-    throw new Error(`Network agreement failed: ${agreement.detail}. Observed: EVM=${agreement.observed.evm.rpcUrl} (chainId=${agreement.observed.evm.chainId}), Soroban=${agreement.observed.soroban.rpcUrl} (passphrase=${agreement.observed.soroban.networkPassphrase})`);
-  }
-
-  const { cfg: config, log, account, publicClient, walletClient } = ensureEvmContext();
-  const registry = config.ethereum.resolverRegistry as Address;
-
-  const stakeAsset = (await publicClient.readContract({
-    address: registry,
-    abi: REGISTRY_ABI,
-    functionName: "stakeAsset"
-  })) as Address;
-  const decimals = await publicClient.readContract({
-    address: stakeAsset,
-    abi: ERC20_ABI,
-    functionName: "decimals"
-  });
-  const symbol = await publicClient.readContract({
-    address: stakeAsset,
-    abi: ERC20_ABI,
-    functionName: "symbol"
-  });
-
-  const minStake = (await publicClient.readContract({
-    address: registry,
-    abi: REGISTRY_ABI,
-    functionName: "minStake"
-  })) as bigint;
-
-  const stake = amountInput
-    ? parseUnits(amountInput, decimals as number)
-    : minStake;
-
-  if (stake < minStake) {
-    throw new Error(`Stake ${stake} is below minimum ${minStake}`);
-  }
-
-  log.info({ stakeAsset, symbol, stake: stake.toString() }, "approving stake transfer");
-  const approveTx = await walletClient.writeContract({
-    address: stakeAsset,
-    abi: ERC20_ABI,
-    functionName: "approve",
-    args: [registry, stake]
-  });
-  await publicClient.waitForTransactionReceipt({ hash: approveTx });
-
-  log.info({ stake: stake.toString() }, "calling registry.register");
-  const tx = await walletClient.writeContract({
-    address: registry,
-    abi: REGISTRY_ABI,
-    functionName: "register",
-    args: [stake]
-  });
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: tx });
-  log.info({ tx, gasUsed: receipt.gasUsed.toString() }, "registered as resolver");
-  log.info(`Resolver ${account.address} is now registered with ${stake} ${symbol}.`);
 }
 
 export async function statusCommand(): Promise<void> {

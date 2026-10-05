@@ -6,12 +6,12 @@ import {
   STELLAR_TESTNET_PASSPHRASE,
 } from '../config/networks';
 
-import type { RecoveredOrder } from '../lib/orderRecovery';
+import type { Transaction } from '../lib/orderRecovery';
 
 interface Props {
   networkState: NetworkModeState;
   expectedNetwork?: 'testnet' | 'mainnet';
-  order?: RecoveredOrder | null;
+  order?: Transaction | null;
 }
 
 const MODE_LABEL: Record<'testnet' | 'mainnet', string> = {

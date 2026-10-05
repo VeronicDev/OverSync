@@ -106,7 +106,9 @@ export function buildPublicOrderEvidence(order: unknown): PublicOrderEvidence {
 
   const txHashes = collectPublicTxHashes(raw);
 
-  const timestamps = raw.timestamps ?? {};
+  // Timestamps may be nested under `timestamps` (snapshot shape) or sit at the
+  // top level (the orders API serialises them directly).
+  const timestamps = raw.timestamps ?? raw;
   const createdAt = typeof timestamps.createdAt === 'number' ? timestamps.createdAt : null;
   const updatedAt = typeof timestamps.updatedAt === 'number' ? timestamps.updatedAt : null;
 

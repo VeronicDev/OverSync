@@ -35,7 +35,7 @@ describe('buildHistoryQuery', () => {
     const params = new URLSearchParams(
       buildHistoryQuery({ ethAddress: USER, stellarAddress: STELLAR, network: 'testnet' })
     );
-    expect(params.get('eth')).toBe(USER);
+    expect(params.get('address')).toBe(USER);
     expect(params.get('stellar')).toBe(STELLAR);
   });
 });

@@ -1,61 +1,53 @@
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import OrderStaleBanner from './OrderStaleBanner';
+import type { FreshnessResult } from '../lib/orderFreshness';
+
+function freshness(label: FreshnessResult['label'], hint = ''): FreshnessResult {
+  return { label, hint };
+}
 
 describe('OrderStaleBanner', () => {
-  it('does not render when order is fresh and there is no error', () => {
+  it('does not render when order is fresh', () => {
     const { container } = render(
-      <OrderStaleBanner isStale={false} freshnessError={null} />
+      <OrderStaleBanner freshness={freshness('fresh')} />
     );
     expect(container.firstChild).toBeNull();
   });
 
-  it('renders stale warning when isStale is true', () => {
-    render(<OrderStaleBanner isStale={true} freshnessError={null} />);
-
-    expect(screen.getByRole('alert')).toBeInTheDocument();
-    expect(screen.getByText(/Order is stale or expired/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Claim and refund actions are disabled/i)
-    ).toBeInTheDocument();
-  });
-
-  it('renders error banner with retry button when freshnessError is provided', async () => {
-    const onRetry = vi.fn();
-
+  it('renders a status hint when the order is stale', () => {
     render(
-      <OrderStaleBanner
-        isStale={false}
-        freshnessError="Network request timed out"
-        onRetry={onRetry}
-      />
+      <OrderStaleBanner freshness={freshness('stale', 'This order is taking longer than usual')} />
     );
 
-    expect(screen.getByRole('alert')).toBeInTheDocument();
-    expect(screen.getByText(/Could not verify order freshness/i)).toBeInTheDocument();
-    expect(screen.getByText(/Network request timed out/i)).toBeInTheDocument();
-    expect(screen.getByText(/The restored order is still displayed/i)).toBeInTheDocument();
-
-    const retryButton = screen.getByRole('button', { name: /Retry freshness/i });
-    expect(retryButton).toBeInTheDocument();
-    expect(retryButton).toBeEnabled();
-
-    await userEvent.click(retryButton);
-    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
   });
 
-  it('disables retry button when isRetrying is true', () => {
+  it('renders the pending hint while an order is still progressing', () => {
     render(
-      <OrderStaleBanner
-        isStale={false}
-        freshnessError="Error"
-        onRetry={vi.fn()}
-        isRetrying={true}
-      />
+      <OrderStaleBanner freshness={freshness('pending', 'Still processing')} />
     );
 
-    const retryButton = screen.getByRole('button', { name: /Retrying.../i });
-    expect(retryButton).toBeDisabled();
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.getByText(/still processing/i)).toBeInTheDocument();
+  });
+
+  it('renders a refund hint when the refund window is close', () => {
+    render(
+      <OrderStaleBanner freshness={freshness('refund-soon', 'The refund window opens soon')} />
+    );
+
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.getByText(/refund window opens soon/i)).toBeInTheDocument();
+  });
+
+  it('renders the refund-eligible hint once the timelock has passed', () => {
+    render(
+      <OrderStaleBanner freshness={freshness('refund-eligible', 'You can refund this order now')} />
+    );
+
+    expect(screen.getByRole('status')).toBeInTheDocument();
+    expect(screen.getByText(/refund this order now/i)).toBeInTheDocument();
   });
 });

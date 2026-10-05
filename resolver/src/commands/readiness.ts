@@ -237,7 +237,16 @@ export async function assessReadiness(): Promise<ReadinessResult> {
   });
 
   // ===== Resolver network agreement (EVM + Soroban match NETWORK_MODE) =====
-  const evmRpcUrl = resolveEthereumRpcUrl(network);
+  // The RPC URLs are resolved defensively: readiness reports *why* a
+  // deployment is not ready, so an invalid or credentialed URL has to become a
+  // failing check rather than an exception escaping the whole assessment.
+  let evmRpcUrl = "";
+  let evmRpcUrlError: string | null = null;
+  try {
+    evmRpcUrl = resolveEthereumRpcUrl(network);
+  } catch (err) {
+    evmRpcUrlError = err instanceof Error ? err.message : String(err);
+  }
   const sorobanRpcUrl =
     process.env.SOROBAN_RPC_URL?.trim() ||
     (network === "mainnet" ? "https://mainnet.sorobanrpc.com" : "https://soroban-testnet.stellar.org");
@@ -245,18 +254,27 @@ export async function assessReadiness(): Promise<ReadinessResult> {
     ? "Public Global Stellar Network ; September 2015"
     : "Test SDF Network ; September 2015";
 
-  const resolverAgreement = await checkResolverNetworkAgreement(
-    network,
-    evmRpcUrl,
-    sorobanRpcUrl,
-    sorobanNetworkPassphrase
-  );
-  checks.push({
-    id: "resolver-network-agreement",
-    label: "Resolver EVM and Soroban networks agree with NETWORK_MODE",
-    status: resolverAgreement.status === "ok" ? "ok" : "fail",
-    detail: resolverAgreement.detail
-  });
+  if (evmRpcUrlError !== null) {
+    checks.push({
+      id: "resolver-network-agreement",
+      label: "Resolver EVM and Soroban networks agree with NETWORK_MODE",
+      status: "fail",
+      detail: `validation failed — ${evmRpcUrlError}`
+    });
+  } else {
+    const resolverAgreement = await checkResolverNetworkAgreement(
+      network,
+      evmRpcUrl,
+      sorobanRpcUrl,
+      sorobanNetworkPassphrase
+    );
+    checks.push({
+      id: "resolver-network-agreement",
+      label: "Resolver EVM and Soroban networks agree with NETWORK_MODE",
+      status: resolverAgreement.status === "ok" ? "ok" : "fail",
+      detail: resolverAgreement.detail
+    });
+  }
 
   const sorobanRegistry = process.env[sorobanRegistryEnv];
   const sorobanRegistryOk = !!sorobanRegistry && SOROBAN_CONTRACT_RE.test(sorobanRegistry);

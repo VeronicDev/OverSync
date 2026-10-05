@@ -113,14 +113,15 @@ jobs:
       #
       # The floor is 1.84, the first release with the `wasm32v1-none` target
       # that `stellar contract build` requires. Staying below ~1.97 keeps the
-      # `TryFromIntError` layout ethnum expects.
+      # `TryFromIntError` layout ethnum expects. 1.89.0 also satisfies the
+      # darling 0.24 / serde_with 3.24 floor of 1.88.
       #
       # To move off this pin: upgrade stellar-cli past 22.8.1 to a release whose
       # lockfile uses ethnum >= 1.5.3, then return to `@stable`.
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.86.0
+          toolchain: 1.89.0
           targets: wasm32-unknown-unknown,wasm32v1-none
 
       # Install the released binary instead of `cargo install`: stellar-cli

@@ -45,13 +45,6 @@ export class SorobanListener {
     }
     const contractId = this.cfg.soroban.htlcContract;
     this.log.info({ contract: contractId }, "starting");
-    if (this.events) {
-      const saved = await this.events.resume("soroban", this.networkId);
-      if (saved) {
-        this.cursor = saved.cursor ?? undefined;
-        this.resumeLedger = saved.cursor ? undefined : saved.position;
-      }
-    }
     void this.loop(contractId);
   }
 
@@ -91,15 +84,6 @@ export class SorobanListener {
         }
         if (events.cursor) this.cursor = events.cursor;
         this.resumeLedger = undefined;
-        if (this.events) {
-          // Persist only after the batch was handled above.
-          await this.events.advance(
-            "soroban",
-            this.networkId,
-            Math.max(this.lastLedger, latest.sequence),
-            this.cursor ?? null
-          );
-        }
       } catch (err) {
         this.log.warn({ err }, "Soroban poll failed");
       }

@@ -1,4 +1,4 @@
-import { generateSecret } from "@oversync/sdk/secrets";
+import { generateSecret, hashOrderPreimage } from "@oversync/sdk/secrets";
 import { SimError, type HtlcSim, type SimErrorCode } from "./sim.js";
 
 /**
@@ -56,10 +56,18 @@ export function strangerAddress(sim: HtlcSim): string {
     : "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
 }
 
+/**
+ * Create a funded order.
+ *
+ * The hashlock is order-bound — sha256(orderId || preimage), matching
+ * `HTLCEscrow`, the Soroban contract, and the SDK's `hashOrderPreimage` — so
+ * the order id has to be known before the order exists. `nextOrderId()` is
+ * exactly that: the id the next `createOrder` will assign.
+ */
 function newOrder(sim: HtlcSim, sender?: string): { id: bigint; preimage: `0x${string}` } {
   const secret = generateSecret();
   const id = sim.createOrder({
-    hashlock: secret.sha256,
+    hashlock: hashOrderPreimage(sim.nextOrderId(), secret.preimage),
     timelockSeconds: TIMELOCK_SECONDS,
     sender
   });
@@ -185,12 +193,22 @@ export const MATRIX_ROWS: MatrixRow[] = [
   },
   {
     id: "unregistered-resolver-claims",
-    description: "claim stays permissionless even when the registry gate is on",
+    description: "a bound registry refuses a claim from a non-resolver",
+    expected: "ClaimResolverNotRegistered",
+    run: (sim) => {
+      const resolver = enableRegistry(sim);
+      const { id, preimage } = newOrder(sim, resolver);
+      return attempt(() => sim.claimOrder(id, preimage, strangerAddress(sim)));
+    }
+  },
+  {
+    id: "active-resolver-claims",
+    description: "an active resolver can claim an order the registry gated",
     expected: "ok",
     run: (sim) => {
       const resolver = enableRegistry(sim);
       const { id, preimage } = newOrder(sim, resolver);
-      return attempt(() => sim.claimOrder(id, preimage));
+      return attempt(() => sim.claimOrder(id, preimage, resolver));
     }
   },
   {

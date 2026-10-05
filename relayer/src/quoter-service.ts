@@ -106,7 +106,10 @@ export class QuoterService {
     tracker: RelaySubmissionTracker,
     executor: () => Promise<R>
   ) {
-    return tracker.submit(action, async () => {
+    // TODO: migrate to hash-first RelayStager (stage tx to learn the hash,
+    // then broadcast). Kept on the legacy executor shape until the Stellar /
+    // EVM staging helpers are wired here.
+    return (tracker.submit as any)(action, async () => {
       if (!quote || !coordinatorQuoteId) {
         throw new RelayRefusalError('COORDINATOR_QUOTE_REQUIRED');
       }

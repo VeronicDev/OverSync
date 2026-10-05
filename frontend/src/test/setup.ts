@@ -1,4 +1,12 @@
 import '@testing-library/jest-dom';
+import { cleanup } from '@testing-library/react';
+
+// Unmount between tests. Without this, renders accumulate in the same jsdom
+// document and queries like `getByRole('button', { name: /load more/i })` match
+// several leftover trees.
+afterEach(() => {
+  cleanup();
+});
 
 const createStorageMock = () => {
   let store: Record<string, string> = {};

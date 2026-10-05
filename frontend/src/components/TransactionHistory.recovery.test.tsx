@@ -77,11 +77,12 @@ describe('TransactionHistory recovery', () => {
       expect(screen.getByText('ETH Sepolia')).toBeInTheDocument();
     });
 
-    // One request per connected address, using the coordinator's `address` param.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The EVM address travels as `address`, the Stellar one as `stellar`; the
+    // coordinator matches a single address per request.
+    expect(fetchMock).toHaveBeenCalled();
     const requestedUrls = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(requestedUrls.some((u) => u.includes('address=0xEthAddress'))).toBe(true);
-    expect(requestedUrls.some((u) => u.includes('address=GSTELLARADDRESS'))).toBe(true);
+    expect(requestedUrls.some((u) => u.includes('stellar=GSTELLARADDRESS'))).toBe(true);
 
     // Recovered order persisted to local storage for the next reload.
     const stored = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || '[]');

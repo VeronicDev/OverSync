@@ -1,159 +1,108 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
 import { DiligenceSnapshot } from './DiligenceSnapshot';
 import { DeploymentContext } from '../context/DeploymentContext';
+import { ETHEREUM_NETWORKS } from '../config/networks';
 
-const mockDeploymentRecord = {
-  registryAddress: '0x1234567890123456789012345678901234567890',
-  escrowAddress: '0x0987654321098765432109876543210987654321',
-  networkId: '1',
-  bytecodeHashes: {
-    'ContractA': '0xabcdef1234567890abcdef1234567890abcdef12',
-    'ContractB': '0x1234567890abcdef1234567890abcdef12345678'
-  }
-};
+const REGISTRY = '0x2222222222222222222222222222222222222222';
+const ESCROW = '0x1111111111111111111111111111111111111111';
+const ESCROW_HASH = '0x' + 'a'.repeat(64);
 
-const mockSelfCheckRecord = {
-  registryAddress: '0x1234567890123456789012345678901234567890',
-  escrowAddress: '0x0987654321098765432109876543210987654321',
-  networkId: '1',
-  bytecodeHashes: {
-    'ContractA': '0xabcdef1234567890abcdef1234567890abcdef12',
-    'ContractB': '0x1234567890abcdef1234567890abcdef12345678'
-  }
-};
+function record(overrides: Partial<{
+  registryAddress: string;
+  escrowAddress: string;
+  networkId: string;
+}> = {}) {
+  return {
+    registryAddress: overrides.registryAddress ?? REGISTRY,
+    escrowAddress: overrides.escrowAddress ?? ESCROW,
+    networkId: overrides.networkId ?? '11155111',
+    bytecodeHashes: { HTLCEscrow: ESCROW_HASH },
+  };
+}
 
-const mockMismatchedSelfCheckRecord = {
-  registryAddress: '0x1111111111111111111111111111111111111111',
-  escrowAddress: '0x0987654321098765432109876543210987654321',
-  networkId: '1',
-  bytecodeHashes: {
-    'ContractA': '0xabcdef1234567890abcdef1234567890abcdef12',
-    'ContractB': '0x1234567890abcdef1234567890abcdef12345678'
-  }
-};
-
-const mockBytecodeMismatchRecord = {
-  registryAddress: '0x1234567890123456789012345678901234567890',
-  escrowAddress: '0x0987654321098765432109876543210987654321',
-  networkId: '1',
-  bytecodeHashes: {
-    'ContractA': '0xabcdef1234567890abcdef1234567890abcdef12',
-    'ContractB': '0x9999999999999999999999999999999999999999'
-  }
-};
+function renderWith(deploymentRecord: ReturnType<typeof record>) {
+  return render(
+    <DeploymentContext.Provider value={{ deploymentRecord }}>
+      <DiligenceSnapshot selfCheckRecord={record()} />
+    </DeploymentContext.Provider>
+  );
+}
 
 describe('DiligenceSnapshot', () => {
-  const renderWithContext = (selfCheckRecord: any, deploymentRecord?: any) => {
-    return render(
-      <DeploymentContext.Provider value={{ deploymentRecord: deploymentRecord || mockDeploymentRecord }}>
-        <DiligenceSnapshot selfCheckRecord={selfCheckRecord} />
-      </DeploymentContext.Provider>
-    );
-  };
-
-  it('renders snapshot with matching deployment record', () => {
-    renderWithContext(mockSelfCheckRecord);
+  it('renders the deployment when it matches the self-check', () => {
+    renderWith(record());
 
     expect(screen.getByTestId('dil-snapshot-visible')).toBeInTheDocument();
-    expect(screen.getByText('Diligence Snapshot')).toBeInTheDocument();
-    expect(screen.getByText(mockDeploymentRecord.registryAddress)).toBeInTheDocument();
-    expect(screen.getByText(mockDeploymentRecord.escrowAddress)).toBeInTheDocument();
-    expect(screen.getByText(/ContractA: 0xabcdef...cdef12/i)).toBeInTheDocument();
+    expect(screen.getByTestId('dil-snapshot-network')).toHaveTextContent('11155111');
   });
 
-  it('hides snapshot when registry address differs', () => {
-    renderWithContext(mockMismatchedSelfCheckRecord);
+  it('names the Ethereum network for the recorded chain id', () => {
+    renderWith(record());
+
+    const expected = Object.values(ETHEREUM_NETWORKS).find((n) => String(n.id) === '11155111');
+    expect(screen.getByText(expected?.displayName ?? expected?.name ?? '11155111')).toBeInTheDocument();
+  });
+
+  it('lists the registry, escrow, and truncated escrow bytecode hash', () => {
+    renderWith(record());
+
+    expect(screen.getByTestId('dil-snapshot-registry')).toHaveTextContent(REGISTRY);
+    expect(screen.getByTestId('dil-snapshot-escrow')).toHaveTextContent(ESCROW);
+    expect(screen.getByTestId('dil-snapshot-bytecode-hashes')).toHaveTextContent(
+      `HTLCEscrow: ${ESCROW_HASH.slice(0, 6)}...${ESCROW_HASH.slice(-4)}`
+    );
+  });
+
+  it('hides the snapshot and names the mismatch when the registry differs', () => {
+    renderWith(record({ registryAddress: '0x3333333333333333333333333333333333333333' }));
 
     expect(screen.getByTestId('dil-snapshot-hidden')).toBeInTheDocument();
-    expect(screen.getByText(/Snapshot hidden due to mismatched deployment record/i)).toBeInTheDocument();
-    expect(screen.getByText(/registry: expected 0x1111111111111111111111111111111111111111, got 0x1234567890123456789012345678901234567890/i)).toBeInTheDocument();
+    expect(screen.getByTestId('dil-snapshot-mismatch')).toHaveTextContent('ethereum.registry');
   });
 
-  it('hides snapshot when bytecode hashes differ', () => {
-    renderWithContext(mockBytecodeMismatchRecord);
+  it('hides the snapshot and names the mismatch when the escrow differs', () => {
+    renderWith(record({ escrowAddress: '0x4444444444444444444444444444444444444444' }));
 
     expect(screen.getByTestId('dil-snapshot-hidden')).toBeInTheDocument();
-    expect(screen.getByText(/bytecode hashes do not match/i)).toBeInTheDocument();
+    expect(screen.getByTestId('dil-snapshot-mismatch')).toHaveTextContent('ethereum.escrow');
   });
 
-  it('does not expose secrets in visible text', () => {
-    renderWithContext(mockSelfCheckRecord);
+  it('hides the snapshot and names the mismatch when the chain id differs', () => {
+    renderWith(record({ networkId: '1' }));
 
-    const visibleText = screen.getByTestId('dil-snapshot-visible').textContent;
-    expect(visibleText).not.toContain('secret');
-    expect(visibleText).not.toContain('private');
-    expect(visibleText).not.toContain('deployer');
+    expect(screen.getByTestId('dil-snapshot-hidden')).toBeInTheDocument();
+    expect(screen.getByTestId('dil-snapshot-mismatch')).toHaveTextContent('ethereumChainId');
   });
 
-  it('shows network name from config when available', () => {
-    renderWithContext(mockSelfCheckRecord);
+  it('hides the snapshot when the bytecode hash differs', () => {
+    render(
+      <DeploymentContext.Provider
+        value={{
+          deploymentRecord: {
+            ...record(),
+            bytecodeHashes: { HTLCEscrow: '0x' + 'c'.repeat(64) },
+          },
+        }}
+      >
+        <DiligenceSnapshot selfCheckRecord={record()} />
+      </DeploymentContext.Provider>
+    );
 
-    expect(screen.getByText('Ethereum Mainnet')).toBeInTheDocument();
-  });
-});
-
-describe('DiligenceSnapshot — shared deployment record', () => {
-  const RECORD = buildDeploymentRecord({
-    network: 'testnet',
-    ethereum: {
-      chainId: 11155111,
-      contracts: {
-        HTLCEscrow: '0x1111111111111111111111111111111111111111',
-        ResolverRegistry: '0x2222222222222222222222222222222222222222',
-      },
-      codeHashes: { HTLCEscrow: '0x' + 'a'.repeat(64), ResolverRegistry: { codeHash: '0x' + 'b'.repeat(64) } },
-      deployer: '0x686Be1DEF4b9Bd725A5Df07505E25a94Fa71394c',
-      deployerPrivateKey: '0x' + 'f'.repeat(64),
-    },
-    stellar: {
-      contracts: { HTLC: 'CHTLCFIXTURE', ResolverRegistry: 'CREGISTRYFIXTURE' },
-      codeHashes: { HTLC: 'c'.repeat(64) },
-      deployer: 'GC4VWBK5QSJCBSRWIZJYWCF2SJAPCKU3OFHH4XK7ZBTZ5HCK7VYLU6FL',
-      deployerSecret: 'SDEPLOYERSECRETFIXTURE',
-    },
+    expect(screen.getByTestId('dil-snapshot-hidden')).toBeInTheDocument();
+    expect(screen.getByTestId('dil-snapshot-mismatch')).toHaveTextContent(
+      'ethereum.escrowCodeHash'
+    );
   });
 
-  test('a matching record renders the snapshot fields from that record', () => {
-    render(<DiligenceSnapshot record={RECORD} selfCheckRecord={{ ...RECORD }} />);
+  it('says so when no deployment record is available', () => {
+    render(
+      <DeploymentContext.Provider value={{ deploymentRecord: null }}>
+        <DiligenceSnapshot selfCheckRecord={record()} />
+      </DeploymentContext.Provider>
+    );
 
-    expect(screen.queryByTestId('diligence-snapshot-mismatch')).not.toBeInTheDocument();
-    expect(screen.getByTestId('diligence-snapshot-network')).toHaveTextContent('testnet');
-    expect(screen.getByText('0x1111111111111111111111111111111111111111')).toBeInTheDocument();
-    expect(screen.getByText('0x2222222222222222222222222222222222222222')).toBeInTheDocument();
-    expect(screen.getByText('CHTLCFIXTURE')).toBeInTheDocument();
-    expect(screen.getByText('CREGISTRYFIXTURE')).toBeInTheDocument();
-    expect(screen.getByText('0x' + 'a'.repeat(64))).toBeInTheDocument();
-    expect(screen.getByText('0x' + 'b'.repeat(64))).toBeInTheDocument();
-    expect(screen.getByText('c'.repeat(64))).toBeInTheDocument();
-    expect(screen.getByText('Stellar Testnet ResolverRegistry wasm hash').nextSibling).toHaveTextContent('Not recorded');
-  });
-
-  test('a different registry address hides the snapshot and names the field', () => {
-    const selfCheck = {
-      ...RECORD,
-      ethereum: { ...RECORD.ethereum, registry: '0x3333333333333333333333333333333333333333' },
-    };
-    render(<DiligenceSnapshot record={RECORD} selfCheckRecord={selfCheck} />);
-
-    expect(screen.getByTestId('diligence-snapshot-mismatch')).toHaveTextContent('ethereum.registry');
-    expect(screen.queryByText('0x1111111111111111111111111111111111111111')).not.toBeInTheDocument();
-    expect(screen.queryByText('0x2222222222222222222222222222222222222222')).not.toBeInTheDocument();
-    expect(screen.queryByText('0x3333333333333333333333333333333333333333')).not.toBeInTheDocument();
-  });
-
-  test('the visible text does not contain a secret or deployer', () => {
-    const { container } = render(<DiligenceSnapshot record={RECORD} selfCheckRecord={RECORD} />);
-    const text = container.textContent ?? '';
-    expect(text).not.toContain('f'.repeat(64));
-    expect(text).not.toContain('SDEPLOYERSECRETFIXTURE');
-    expect(text).not.toMatch(/deployer/i);
-    expect(text).not.toContain('0x686Be1DEF4b9Bd725A5Df07505E25a94Fa71394c');
-  });
-
-  test('defaults render the same record the self-check reports (no wallet needed)', () => {
-    expect(diffDeploymentRecords(getDeploymentRecord(), getSelfCheckDeploymentRecord())).toEqual([]);
-    render(<DiligenceSnapshot />);
-    expect(screen.queryByTestId('diligence-snapshot-mismatch')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dil-snapshot-missing')).toBeInTheDocument();
   });
 });

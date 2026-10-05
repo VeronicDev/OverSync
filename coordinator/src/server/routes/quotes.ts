@@ -3,13 +3,18 @@ import { z } from "zod";
 import { QuoteExpiredError, QuoteNotFoundError } from "../../services/quote-service.js";
 import type { QuoteService } from "../../services/quote-service.js";
 
+// Every term is optional: a caller can ask for a price quote with no terms at
+// all, or bind one to an amount only. Whichever fields are supplied must be
+// well formed, and a decimal amount is refused so the coordinator never
+// re-parses (and possibly rounds) what the client already parsed.
 const quoteTermsSchema = z.object({
-  srcChain: z.enum(["ethereum", "stellar"]),
-  srcAsset: z.string().min(1),
-  srcAmount: z.string().regex(/^\d+$/),
-  dstChain: z.enum(["ethereum", "stellar"]),
-  dstAsset: z.string().min(1),
-  dstAmount: z.string().regex(/^\d+$/)
+  srcChain: z.enum(["ethereum", "stellar"]).optional(),
+  srcAsset: z.string().min(1).optional(),
+  srcAmount: z.string().regex(/^\d+$/).optional(),
+  dstChain: z.enum(["ethereum", "stellar"]).optional(),
+  dstAsset: z.string().min(1).optional(),
+  dstAmount: z.string().regex(/^\d+$/).optional(),
+  amountBaseUnits: z.string().regex(/^(0|[1-9]\d*)$/).optional()
 });
 
 export function quotesRoutes(quotes: QuoteService): Router {
