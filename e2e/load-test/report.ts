@@ -6,29 +6,73 @@ import type { LoadTestConfig } from "./config.js";
 import type { OrderResult } from "./runner.js";
 
 const PREIMAGE_PATTERN = /0x[0-9a-fA-F]{64}/g;
+const BARE_HEX64_PATTERN = /(?<![0-9a-fA-F])[0-9a-fA-F]{64}(?![0-9a-fA-F])/g;
 
-function redactUrlUserinfo(url: string): string {
+const SENSITIVE_QUERY_KEYS = /api[_-]?key|^key$|token|secret|auth|project[_-]?id|private[_-]?key/i;
+
+function redactUrlCredentials(url: string): string {
   try {
     const u = new URL(url);
-    if (u.username || u.password) {
+    const hadUserinfo = Boolean(u.username || u.password);
+    if (hadUserinfo) {
       u.username = "***";
       u.password = "***";
     }
-    return u.toString();
+    // Infura / Alchemy style API keys live in the last path segment:
+    //   https://sepolia.infura.io/v3/<key>  ->  https://sepolia.infura.io/v3/***
+    //   https://eth-mainnet.g.alchemy.com/v2/<key>  ->  .../v2/***
+    const hadPathKey = /\/v[23]\/[^/]+/i.test(u.pathname);
+    if (hadPathKey) {
+      u.pathname = u.pathname.replace(/(\/v[23]\/)[^/]+/i, "$1***");
+    }
+    // Query-string credentials (?apikey=, ?api_key=, ?key=, ?token=, ...).
+    let touchedQuery = false;
+    for (const [k] of u.searchParams) {
+      if (SENSITIVE_QUERY_KEYS.test(k)) {
+        u.searchParams.set(k, "***");
+        touchedQuery = true;
+      }
+    }
+    if (!hadUserinfo && !hadPathKey && !touchedQuery) {
+      // No credentials found: return the input untouched so we don't
+      // normalize it (e.g. `new URL(...).toString()` appends a trailing `/`
+      // to bare hosts, which breaks exact-match expectations).
+      return url;
+    }
+    // Keep the redacted marker readable: URLSearchParams encodes `***` as
+    // `%2A%2A%2A`; decode it back for log/report output.
+    let out = u.toString();
+    if (touchedQuery) out = out.replace(/%2A%2A%2A/gi, "***");
+    return out;
   } catch {
     return url;
   }
 }
 
+function redactUrlUserinfo(url: string): string {
+  return redactUrlCredentials(url);
+}
+
 export function redactErrorMessage(message: string): string {
   let redacted = message;
   redacted = redacted.replace(PREIMAGE_PATTERN, "0x***REDACTED***");
-  redacted = redacted.replace(/https?:\/\/[^\s]+/g, (match) => redactUrlUserinfo(match));
+  redacted = redacted.replace(BARE_HEX64_PATTERN, "***REDACTED***");
+  // Match http(s) URLs but strip trailing log punctuation (.,;!?)"'`)]} )
+  // before redacting so `new URL()` sees a clean URL.
+  redacted = redacted.replace(/https?:\/\/[^\s"'`<>]+/g, (match) => {
+    const trail: string[] = [];
+    let core = match;
+    while (core.length > 0 && /[.,;!?)"'\]}]+$/.test(core)) {
+      trail.unshift(core[core.length - 1]);
+      core = core.slice(0, -1);
+    }
+    return redactUrlCredentials(core) + trail.join("");
+  });
   return redacted;
 }
 
 export function redactUrl(url: string): string {
-  return redactUrlUserinfo(url);
+  return redactUrlCredentials(url);
 }
 
 // ---------------------------------------------------------------------------

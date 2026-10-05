@@ -19,6 +19,7 @@
  *     SEPOLIA_RPC_URL or INFURA_API_KEY
  *     RESOLVER_ETH_PRIVATE_KEY
  */
+import { redactUrl } from "./report.js";
 
 export interface LoadTestConfig {
   dryRun: boolean;
@@ -34,23 +35,30 @@ export interface LoadTestConfig {
 
 const MAINNET_ETH_RPC_PATTERNS = [
   /mainnet\.infura\.io/i,
-  /eth\.mainnet/i,
+  /eth[-.]mainnet/i,
   /mainnet\.alchemyapi\.io/i,
   /mainnet\.alchemy\.com/i,
+  /eth-mainnet\.g\.alchemy\.com/i,
   /mainnet\.rpc\.gnosis\.io/i,
   /mainnet\.rpc\.ankr\.com/i,
   /cloudflare-eth\.com/i,
-  /rpc\.ankr\.com\/eth$/i,
+  /rpc\.ankr\.com\/eth([/?]|$)/i,
   /eth-mainnet\.public\.blastapi\.io/i,
   /mainnet\.era\.zksync\.io/i,
+  // Catch-all: any RPC URL mentioning mainnet is treated as mainnet.
+  // Sepolia / testnet / futurenet URLs never contain this substring.
+  /mainnet/i,
 ];
 
 const MAINNET_STELLAR_RPC_PATTERNS = [
   /soroban-mainnet/i,
+  /horizon-mainnet/i,
   /mainnet\.stellar\.org/i,
   /rpc\.mainnet\.stellar/i,
   /mainnet\.sorobanrpc\.com/i,
   /horizon\.stellar\.org/i,
+  // Catch-all for future mainnet hosts.
+  /mainnet/i,
 ];
 
 const MAINNET_STELLAR_PASSPHRASES = [
@@ -70,29 +78,16 @@ function isMainnetStellarPassphrase(passphrase: string): boolean {
   return MAINNET_STELLAR_PASSPHRASES.includes(normalized);
 }
 
-function redactUrlUserinfo(url: string): string {
-  try {
-    const u = new URL(url);
-    if (u.username || u.password) {
-      u.username = "***";
-      u.password = "***";
-    }
-    return u.toString();
-  } catch {
-    return url;
-  }
-}
-
 export function validateNotMainnet(config: LoadTestConfig): void {
   if (config.sepoliaRpcUrl && isMainnetEthRpc(config.sepoliaRpcUrl)) {
     throw new Error(
-      `Refusing to run: SEPOLIA_RPC_URL points to an Ethereum mainnet endpoint (${redactUrlUserinfo(config.sepoliaRpcUrl)}). ` +
+      `Refusing to run: SEPOLIA_RPC_URL points to an Ethereum mainnet endpoint (${redactUrl(config.sepoliaRpcUrl)}). ` +
         "Use a Sepolia/testnet RPC URL."
     );
   }
   if (config.sorobanRpcUrl && isMainnetStellarRpc(config.sorobanRpcUrl)) {
     throw new Error(
-      `Refusing to run: SOROBAN_RPC_URL points to a Stellar mainnet endpoint (${redactUrlUserinfo(config.sorobanRpcUrl)}). ` +
+      `Refusing to run: SOROBAN_RPC_URL points to a Stellar mainnet endpoint (${redactUrl(config.sorobanRpcUrl)}). ` +
         "Use a testnet/futurenet RPC URL."
     );
   }

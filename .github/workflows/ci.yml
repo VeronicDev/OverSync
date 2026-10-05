@@ -152,7 +152,7 @@ jobs:
         continue-on-error: true
 
       - name: Pin ed25519-dalek to 2.x
-        run: cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0
+        run: cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0 || echo "ed25519-dalek 3.0.0 not in graph, skipping pin"
 
       - name: Build WASM
         run: stellar contract build
@@ -167,7 +167,7 @@ jobs:
       - name: Pin ed25519-dalek to the 2.x line
         run: |
           cargo generate-lockfile
-          cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0
+          cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0 || echo "ed25519-dalek 3.0.0 not in graph, skipping pin"
 
       - name: Run unit tests
         run: cargo test --release

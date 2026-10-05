@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, validateNotMainnet, type LoadTestConfig } from "./config.js";
 import { buildReport, redactErrorMessage, redactUrl, type SoakReport } from "./report.js";
 import { generateOrders, type PlannedOrder } from "./orders.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("load-test: mainnet refusal", () => {
   const baseConfig: LoadTestConfig = {
@@ -29,7 +33,9 @@ describe("load-test: mainnet refusal", () => {
   it("rejects Infura mainnet RPC URL", () => {
     const config = { ...baseConfig, sepoliaRpcUrl: "https://mainnet.infura.io/v3/abc123" };
     expect(() => validateNotMainnet(config)).toThrow(/mainnet endpoint/);
+    // API key in the path must not leak into the thrown error.
     expect(() => validateNotMainnet(config)).toThrow(/https:\/\/mainnet\.infura\.io\/v3\/\*\*\*/);
+    expect(() => validateNotMainnet(config)).not.toThrow(/abc123/);
   });
 
   it("rejects Alchemy mainnet RPC URL", () => {
@@ -90,28 +96,38 @@ describe("load-test: redaction", () => {
     const msg = "Failed to connect to https://user:pass@sepolia.infura.io/v3/key";
     const redacted = redactErrorMessage(msg);
     expect(redacted).not.toContain("user:pass");
-    expect(redacted).toContain("https://***:***@sepolia.infura.io/v3/key");
+    expect(redacted).not.toContain("/v3/key");
+    expect(redacted).toContain("https://***:***@sepolia.infura.io/v3/***");
   });
 
   it("redacts URL with only username", () => {
     const msg = "Error at https://api-key@sepolia.infura.io/v3/key";
     const redacted = redactErrorMessage(msg);
-    expect(redacted).toContain("https://***:***@sepolia.infura.io/v3/key");
+    expect(redacted).toContain("https://***:***@sepolia.infura.io/v3/***");
   });
 
   it("redacts URL with only password", () => {
     const msg = "Error at https://:secret@sepolia.infura.io/v3/key";
     const redacted = redactErrorMessage(msg);
-    expect(redacted).toContain("https://***:***@sepolia.infura.io/v3/key");
+    expect(redacted).toContain("https://***:***@sepolia.infura.io/v3/***");
   });
 
   it("redactUrl redacts userinfo in RPC URLs", () => {
     const url = "https://user:secret@sepolia.infura.io/v3/abc123";
-    expect(redactUrl(url)).toBe("https://***:***@sepolia.infura.io/v3/abc123");
+    expect(redactUrl(url)).toBe("https://***:***@sepolia.infura.io/v3/***");
   });
 
-  it("redactUrl leaves URLs without userinfo unchanged", () => {
-    const url = "https://sepolia.infura.io/v3/abc123";
+  it("redactUrl redacts API keys in the path", () => {
+    expect(redactUrl("https://sepolia.infura.io/v3/abc123")).toBe(
+      "https://sepolia.infura.io/v3/***"
+    );
+    expect(redactUrl("https://eth-mainnet.g.alchemy.com/v2/abc123")).toBe(
+      "https://eth-mainnet.g.alchemy.com/v2/***"
+    );
+  });
+
+  it("redactUrl leaves URLs without credentials unchanged", () => {
+    const url = "https://soroban-testnet.stellar.org";
     expect(redactUrl(url)).toBe(url);
   });
 

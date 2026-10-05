@@ -16,6 +16,7 @@ import {
   ACTION_TARGET_STATUS,
   ORDER_FAILURE_CODES,
   actionForStatus,
+  canTransition,
   describeTransitionFailure,
   evaluateTransition,
   type OrderFailureCode,
@@ -46,6 +47,9 @@ const STELLAR_ADDRESS = /^G[A-Z2-7]{55}$/;
 
 /** Page size used when a caller asks for history without naming a limit. */
 const DEFAULT_HISTORY_LIMIT = 50;
+
+/** Writer label used when a caller does not identify itself. */
+export const ORDER_SERVICE_WRITER = "order-service";
 
 export const announceSchema = z.object({
   direction: z.enum(["eth_to_xlm", "xlm_to_eth"]),
@@ -202,6 +206,9 @@ interface AdvanceRequest {
   apply: (order: OrderRow, to: OrderStatus) => Promise<void>;
 }
 
+export class OrderService {
+  private readonly minGapSeconds: number;
+
   constructor(
     private readonly repo: OrdersRepository,
     private readonly log: Logger,
@@ -214,11 +221,25 @@ interface AdvanceRequest {
     this.minGapSeconds = config?.timelockSafetyGapSeconds ?? 600;
   }
 
-  async buildLockOrder(request: LockRequest): Promise<any> {
-    const activeV2Escrow = this.config.getActiveV2Escrow();
+  /**
+   * Record a new order announcement. The coordinator does NOT lock any
+   * funds — it simply records the intent so the order book is visible
+   * to all resolvers and the user can later attach the on-chain
+   * `srcOrderId` once they have locked.
+   *
+   * When `quoteId` is present in the input, it is validated against
+   * the QuoteService before the order is persisted.  Expired or
+   * unknown quoteIds are rejected as `OrderValidationError` so the
+   * error surfaces cleanly to the caller before any chain action is
+   * attempted.
+   */
+  async announce(input: AnnounceInput): Promise<OrderRow> {
+    validateChainAddress(input.srcChain, input.srcAddress);
+    validateChainAddress(input.dstChain, input.dstAddress);
+    validateDirectionAgainstChains(input);
 
-    if (activeV2Escrow && activeV2Escrow.toLowerCase() !== request.target.toLowerCase()) {
-      throw new Error("Legacy bridge lock rejected: v2 escrow active");
+    if (input.hashlock.toLowerCase() === ZERO_HASHLOCK.toLowerCase()) {
+      throw new OrderValidationError("hashlock must not be all zeros");
     }
 
     const hashlock = input.hashlock.toLowerCase() as `0x${string}`;
@@ -284,6 +305,15 @@ interface AdvanceRequest {
 
   getTransitions(publicId: string): Promise<OrderTransitionSummary[]> {
     return this.repo.getTransitions(publicId);
+  }
+
+  /**
+   * Transitions the state machine refused for an order, with their stable
+   * failure code. Queryable so an operator can see that a late listener event
+   * or a repeated client call was refused and why the status did not move.
+   */
+  getRejectedTransitions(publicId: string): Promise<OrderRejectedTransition[]> {
+    return this.repo.getRejectedTransitions(publicId);
   }
 
   findByHashlock(hashlock: string): Promise<OrderRow | null> {
@@ -418,6 +448,126 @@ interface AdvanceRequest {
 
   async getSnapshots(): Promise<OrderSnapshot[]> {
     return this.repo.getCompletedOrderSnapshots();
+  }
+
+  /**
+   * Persist a refused transition and throw a typed error carrying its stable
+   * code. The stored order status is never touched; only the audit trail
+   * (`order_events`) grows.
+   */
+  private async rejectTransition(info: TransitionRejectionInfo): Promise<never> {
+    await this.persistRejection(info);
+    throw new OrderTransitionRejectedError(info);
+  }
+
+  /**
+   * Record a refused transition in the audit trail: one `transition_rejected`
+   * event, one metric sample, one log line. The order row is left alone.
+   *
+   * `noisy` is false for an identical redelivery, which is normal for chain
+   * listeners and only worth a debug line (the metric still counts it).
+   */
+  private async persistRejection(
+    info: TransitionRejectionInfo,
+    { noisy = true }: { noisy?: boolean } = {}
+  ): Promise<void> {
+    await this.repo.recordRejectedTransition({
+      publicId: info.publicId,
+      from: info.from,
+      to: info.to,
+      action: info.action,
+      code: info.code,
+      reason: info.reason,
+      txHash: info.txHash ?? null,
+      writer: info.writer,
+    });
+    illegalOrderTransitions.inc({ code: info.code });
+    const fields = {
+      publicId: info.publicId,
+      from: info.from,
+      to: info.to,
+      action: info.action,
+      code: info.code,
+      writer: info.writer,
+      txHash: info.txHash ?? null,
+    };
+    if (noisy) {
+      this.log.warn(fields, "refused illegal order transition");
+    } else {
+      this.log.debug(fields, "step already applied, refusing the repeat");
+    }
+  }
+
+  /**
+   * Apply one legal edge, refusing (and recording) anything else.
+   *
+   * Order of operations per event:
+   *   1. load the order,
+   *   2. if it is already in the target status, decide redelivery vs conflict,
+   *   3. ask the state machine whether the edge is legal,
+   *   4. only then write.
+   */
+  private async advance(request: AdvanceRequest): Promise<void> {
+    const order = await this.repo.findByPublicId(request.publicId);
+    if (!order) throw new OrderValidationError(`unknown order ${request.publicId}`);
+
+    const to = ACTION_TARGET_STATUS[request.action];
+    const writer = request.writer ?? ORDER_SERVICE_WRITER;
+
+    if (order.status === to) {
+      const redelivery = request.isSameStep ? request.isSameStep(order) : true;
+      const code = redelivery
+        ? ORDER_FAILURE_CODES.REPEATED_STEP
+        : ORDER_FAILURE_CODES.CONFLICTING_STEP;
+      const info: TransitionRejectionInfo = {
+        publicId: request.publicId,
+        from: order.status,
+        to,
+        action: request.action,
+        code,
+        reason: describeTransitionFailure(code, order.status, to),
+        txHash: request.txHash ?? null,
+        writer,
+      };
+      if (redelivery) {
+        // At-least-once delivery is normal for chain events: the step is
+        // already applied, so record the repeat but neither move the order
+        // nor fail the caller.
+        await this.persistRejection(info, { noisy: false });
+        return;
+      }
+      return this.rejectTransition(info);
+    }
+
+    const assessment = evaluateTransition(order.status, to, request.action);
+    if (!assessment.allowed) {
+      return this.rejectTransition({
+        publicId: request.publicId,
+        from: order.status,
+        to,
+        action: request.action,
+        code: assessment.code ?? ORDER_FAILURE_CODES.NOT_ALLOWED,
+        reason:
+          assessment.reason ??
+          describeTransitionFailure(ORDER_FAILURE_CODES.NOT_ALLOWED, order.status, to),
+        txHash: request.txHash ?? null,
+        writer,
+      });
+    }
+
+    await request.apply(order, to);
+    this.log.info(
+      {
+        publicId: order.publicId,
+        from: order.status,
+        to,
+        action: request.action,
+        writer,
+        ...request.logFields,
+      },
+      request.logMessage
+    );
+    ordersTotal.inc({ status: to });
   }
 
   /**
